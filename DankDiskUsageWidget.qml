@@ -252,8 +252,6 @@ PluginComponent {
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
-                Item { width: 1; height: 1; Layout ? undefined : undefined }
-
                 DankActionButton {
                     buttonSize: 28
                     iconName: "refresh"
