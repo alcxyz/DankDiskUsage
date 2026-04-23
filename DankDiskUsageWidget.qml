@@ -138,23 +138,17 @@ PluginComponent {
         }
     }
 
-    // ── Nix store path count (the slow part, separated) ─────────────
+    // ── Nix store info ────────────────────────────────────────────────
     property Process nixPathCountProcess: Process {
         running: false
-        command: ["sh", "-c", "nix-store --query --requisites /run/current-system 2>/dev/null | wc -l | tr -d ' '"]
+        command: ["sh", "-c", "nix-store --query --requisites /run/current-system 2>/dev/null | wc -l | tr -d ' '; df -h --output=used /nix/store 2>/dev/null | tail -1 | tr -d ' '"]
 
         stdout: StdioCollector {
             onStreamFinished: {
-                var count = parseInt(text.trim()) || 0
-                // Get size from importantMounts /nix entry if available, else query df
-                var nixSize = "?"
-                for (var i = 0; i < root.importantMounts.length; i++) {
-                    if (root.importantMounts[i].mount === "/nix") {
-                        nixSize = root.importantMounts[i].used
-                        break
-                    }
-                }
-                root.nixStoreInfo = { paths: count, size: nixSize }
+                var lines = text.trim().split("\n")
+                var count = parseInt(lines[0]) || 0
+                var size = (lines.length >= 2 && lines[1]) ? lines[1] : "?"
+                root.nixStoreInfo = { paths: count, size: size }
             }
         }
     }
