@@ -77,8 +77,8 @@ PluginComponent {
 
     // ── Data refresh ────────────────────────────────────────────────
     function refreshAll() {
-        dfProcess.running = true
-        if (root.showNixStore) nixPathCountProcess.running = true
+        if (!dfProcess.running) dfProcess.running = true
+        if (root.showNixStore && !nixPathCountProcess.running) nixPathCountProcess.running = true
     }
 
     // ── df: all filesystems ─────────────────────────────────────────
