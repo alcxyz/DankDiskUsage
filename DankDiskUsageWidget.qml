@@ -47,7 +47,16 @@ PluginComponent {
 
     Component.onCompleted: {
         loadSettings()
+        loadCachedNixStore()
         refreshAll()
+    }
+
+    function loadCachedNixStore() {
+        if (!pluginService) return
+        var cached = pluginService.loadPluginState("dankDiskUsage", "nixStoreCache", null)
+        if (cached && cached.paths !== undefined) {
+            nixStoreInfo = cached
+        }
     }
 
     Timer {
@@ -148,7 +157,10 @@ PluginComponent {
                 var lines = text.trim().split("\n")
                 var count = parseInt(lines[0]) || 0
                 var size = (lines.length >= 2 && lines[1]) ? lines[1] : "?"
-                root.nixStoreInfo = { paths: count, size: size }
+                var info = { paths: count, size: size }
+                root.nixStoreInfo = info
+                if (root.pluginService)
+                    root.pluginService.savePluginState("dankDiskUsage", "nixStoreCache", info)
             }
         }
     }
