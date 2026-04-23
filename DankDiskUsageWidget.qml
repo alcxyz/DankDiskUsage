@@ -296,27 +296,31 @@ PluginComponent {
                             anchors.margins: Theme.spacingS
                             spacing: Theme.spacingXS
 
-                            Row {
+                            Item {
                                 width: parent.width
-                                spacing: Theme.spacingS
+                                height: mountText.implicitHeight
 
                                 StyledText {
+                                    id: mountText
                                     text: modelData.mount
                                     font.pixelSize: Theme.fontSizeMedium
                                     font.weight: Font.Medium
                                     color: Theme.surfaceText
                                     elide: Text.ElideMiddle
-                                    width: parent.width * 0.5
+                                    anchors.left: parent.left
+                                    anchors.right: usedText.left
+                                    anchors.rightMargin: Theme.spacingS
+                                    anchors.verticalCenter: parent.verticalCenter
                                 }
 
-                                Item { width: 1; height: 1 }
-
                                 StyledText {
+                                    id: usedText
                                     text: modelData.used + " / " + modelData.size
                                     font.pixelSize: Theme.fontSizeSmall
                                     color: Theme.surfaceVariantText
                                     anchors.right: percentText.left
                                     anchors.rightMargin: Theme.spacingS
+                                    anchors.verticalCenter: parent.verticalCenter
                                 }
 
                                 StyledText {
@@ -326,6 +330,7 @@ PluginComponent {
                                     font.weight: Font.Bold
                                     color: root.usageColor(modelData.percent)
                                     anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
                                 }
                             }
 
@@ -375,32 +380,38 @@ PluginComponent {
                             anchors.margins: Theme.spacingS
                             spacing: Theme.spacingXS
 
-                            Row {
+                            Item {
                                 width: parent.width
-                                spacing: Theme.spacingS
+                                height: zpoolNameText.implicitHeight
 
-                                DankIcon {
-                                    name: "database"
-                                    size: Theme.fontSizeMedium
-                                    color: modelData.health === "ONLINE" ? Theme.primary : "#ff4444"
+                                Row {
+                                    id: zpoolLeftRow
+                                    spacing: Theme.spacingS
+                                    anchors.left: parent.left
                                     anchors.verticalCenter: parent.verticalCenter
-                                }
 
-                                StyledText {
-                                    text: modelData.name
-                                    font.pixelSize: Theme.fontSizeMedium
-                                    font.weight: Font.Medium
-                                    color: Theme.surfaceText
-                                }
+                                    DankIcon {
+                                        name: "database"
+                                        size: Theme.fontSizeMedium
+                                        color: modelData.health === "ONLINE" ? Theme.primary : "#ff4444"
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
 
-                                StyledText {
-                                    text: modelData.health
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    color: modelData.health === "ONLINE" ? Theme.primary : "#ff4444"
-                                    font.weight: Font.Medium
-                                }
+                                    StyledText {
+                                        id: zpoolNameText
+                                        text: modelData.name
+                                        font.pixelSize: Theme.fontSizeMedium
+                                        font.weight: Font.Medium
+                                        color: Theme.surfaceText
+                                    }
 
-                                Item { width: 1; height: 1 }
+                                    StyledText {
+                                        text: modelData.health
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        color: modelData.health === "ONLINE" ? Theme.primary : "#ff4444"
+                                        font.weight: Font.Medium
+                                    }
+                                }
 
                                 StyledText {
                                     text: modelData.alloc + " / " + modelData.size
@@ -408,6 +419,7 @@ PluginComponent {
                                     color: Theme.surfaceVariantText
                                     anchors.right: zpoolPercentText.left
                                     anchors.rightMargin: Theme.spacingS
+                                    anchors.verticalCenter: parent.verticalCenter
                                 }
 
                                 StyledText {
@@ -417,6 +429,7 @@ PluginComponent {
                                     font.weight: Font.Bold
                                     color: root.usageColor(modelData.percent)
                                     anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
                                 }
                             }
 
