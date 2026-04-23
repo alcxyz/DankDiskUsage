@@ -18,12 +18,20 @@ PluginComponent {
     property bool showNixStore: true
     property var excludeMounts: []
 
+    // ── Mount priority (lower = more important) ─────────────────────
+    readonly property var mountPriority: ({
+        "/": 1, "/home": 2, "/nix": 3, "/var": 4, "/boot": 5,
+        "/root": 6, "/opt": 7, "/srv": 8, "/usr": 9, "/mnt": 10
+    })
+
     // ── Runtime state ───────────────────────────────────────────────
     property bool isLoading: true
-    property var partitions: []
-    property var zfsPools: []
+    property var importantMounts: []
+    property var zfsPoolGroups: []
+    property var otherMounts: []
     property var nixStoreInfo: null
-    property int worstUsagePercent: 0
+    property int primaryUsagePercent: 0
+    property var expandedPools: ({})
 
     function loadSettings() {
         if (!pluginService || !pluginService.loadPluginData) return
@@ -60,28 +68,25 @@ PluginComponent {
 
     // ── Data refresh ────────────────────────────────────────────────
     function refreshAll() {
-        if (root.showPartitions) dfProcess.running = true
-        if (root.showZfs) zpoolProcess.running = true
-        if (root.showNixStore) nixStoreProcess.running = true
+        dfProcess.running = true
+        if (root.showNixStore) nixPathCountProcess.running = true
     }
 
-    // ── df: standard partitions ─────────────────────────────────────
+    // ── df: all filesystems ─────────────────────────────────────────
     property Process dfProcess: Process {
         running: false
-        command: ["sh", "-c", "df -h --output=source,fstype,size,used,avail,pcent,target -x tmpfs -x devtmpfs -x efivarfs -x overlay 2>/dev/null | tail -n +2"]
+        command: ["sh", "-c", "df -h --output=source,fstype,size,used,avail,pcent,target -x tmpfs -x devtmpfs -x efivarfs -x overlay -x fuse 2>/dev/null | tail -n +2"]
 
         stdout: StdioCollector {
             onStreamFinished: {
                 var lines = text.trim().split("\n")
-                var results = []
+                var all = []
                 for (var i = 0; i < lines.length; i++) {
                     var parts = lines[i].trim().split(/\s+/)
                     if (parts.length < 7) continue
                     var mount = parts.slice(6).join(" ")
                     if (root.isExcluded(mount)) continue
-                    // Skip ZFS mounts if showZfs is on (handled separately)
-                    if (root.showZfs && parts[1] === "zfs") continue
-                    results.push({
+                    all.push({
                         device: parts[0],
                         fstype: parts[1],
                         size: parts[2],
@@ -91,62 +96,65 @@ PluginComponent {
                         mount: mount
                     })
                 }
-                root.partitions = results
-                root.updateWorstUsage()
+
+                var important = []
+                var pools = {}
+                var other = []
+
+                for (var j = 0; j < all.length; j++) {
+                    var entry = all[j]
+                    var prio = root.mountPriority[entry.mount]
+                    if (prio !== undefined) {
+                        entry.priority = prio
+                        important.push(entry)
+                    } else if (entry.fstype === "zfs" && root.showZfs) {
+                        var poolName = entry.device.indexOf("/") > 0
+                            ? entry.device.substring(0, entry.device.indexOf("/"))
+                            : entry.device
+                        // Skip bare pool root datasets (e.g. zpool mounted at /zpool, ~0% used)
+                        if (entry.device === poolName && entry.percent <= 1) continue
+                        if (!pools[poolName]) pools[poolName] = { poolName: poolName, datasets: [], freeSpace: entry.avail }
+                        pools[poolName].datasets.push(entry)
+                    } else if (root.showPartitions) {
+                        other.push(entry)
+                    }
+                }
+
+                important.sort(function(a, b) { return a.priority - b.priority })
+                root.importantMounts = important
+
+                var poolList = []
+                for (var pn in pools) {
+                    pools[pn].datasets.sort(function(a, b) { return b.percent - a.percent })
+                    poolList.push(pools[pn])
+                }
+                poolList.sort(function(a, b) { return a.poolName.localeCompare(b.poolName) })
+                root.zfsPoolGroups = poolList
+
+                root.otherMounts = other
+                root.updatePrimaryUsage()
                 root.isLoading = false
             }
         }
     }
 
-    // ── ZFS pools ───────────────────────────────────────────────────
-    property Process zpoolProcess: Process {
+    // ── Nix store path count (the slow part, separated) ─────────────
+    property Process nixPathCountProcess: Process {
         running: false
-        command: ["sh", "-c", "zpool list -Hp -o name,size,alloc,free,capacity,health 2>/dev/null"]
+        command: ["sh", "-c", "nix-store --query --requisites /run/current-system 2>/dev/null | wc -l | tr -d ' '"]
 
         stdout: StdioCollector {
             onStreamFinished: {
-                var lines = text.trim().split("\n")
-                var results = []
-                for (var i = 0; i < lines.length; i++) {
-                    if (!lines[i].trim()) continue
-                    var parts = lines[i].trim().split("\t")
-                    if (parts.length < 6) continue
-                    results.push({
-                        name: parts[0],
-                        size: root.humanSize(parseInt(parts[1]) || 0),
-                        alloc: root.humanSize(parseInt(parts[2]) || 0),
-                        free: root.humanSize(parseInt(parts[3]) || 0),
-                        percent: parseInt(parts[4]) || 0,
-                        health: parts[5]
-                    })
-                }
-                root.zfsPools = results
-                root.updateWorstUsage()
-                root.isLoading = false
-            }
-        }
-    }
-
-    // ── Nix store ───────────────────────────────────────────────────
-    property Process nixStoreProcess: Process {
-        running: false
-        command: ["sh", "-c", "nix-store --query --requisites /run/current-system 2>/dev/null | wc -l | tr -d ' '; du -sh /nix/store 2>/dev/null | cut -f1"]
-
-        stdout: StdioCollector {
-            onStreamFinished: {
-                var lines = text.trim().split("\n")
-                if (lines.length >= 2) {
-                    root.nixStoreInfo = {
-                        paths: parseInt(lines[0]) || 0,
-                        size: lines[1] || "?"
-                    }
-                } else if (lines.length === 1 && lines[0]) {
-                    root.nixStoreInfo = {
-                        paths: 0,
-                        size: lines[0]
+                var count = parseInt(text.trim()) || 0
+                // Get size from importantMounts /nix entry if available, else query df
+                var nixSize = "?"
+                for (var i = 0; i < root.importantMounts.length; i++) {
+                    if (root.importantMounts[i].mount === "/nix") {
+                        nixSize = root.importantMounts[i].used
+                        break
                     }
                 }
-                root.isLoading = false
+                root.nixStoreInfo = { paths: count, size: nixSize }
             }
         }
     }
@@ -159,26 +167,23 @@ PluginComponent {
         return false
     }
 
-    function humanSize(bytes) {
-        var units = ["B", "K", "M", "G", "T", "P"]
-        var idx = 0
-        var val = bytes
-        while (val >= 1024 && idx < units.length - 1) {
-            val /= 1024
-            idx++
+    function updatePrimaryUsage() {
+        // Use the highest-priority important mount for the bar pill
+        if (importantMounts.length > 0) {
+            primaryUsagePercent = importantMounts[0].percent
+        } else {
+            // Fallback: worst across everything
+            var worst = 0
+            for (var i = 0; i < otherMounts.length; i++) {
+                if (otherMounts[i].percent > worst) worst = otherMounts[i].percent
+            }
+            for (var j = 0; j < zfsPoolGroups.length; j++) {
+                for (var k = 0; k < zfsPoolGroups[j].datasets.length; k++) {
+                    if (zfsPoolGroups[j].datasets[k].percent > worst) worst = zfsPoolGroups[j].datasets[k].percent
+                }
+            }
+            primaryUsagePercent = worst
         }
-        return val.toFixed(idx > 0 ? 1 : 0) + units[idx]
-    }
-
-    function updateWorstUsage() {
-        var worst = 0
-        for (var i = 0; i < partitions.length; i++) {
-            if (partitions[i].percent > worst) worst = partitions[i].percent
-        }
-        for (var j = 0; j < zfsPools.length; j++) {
-            if (zfsPools[j].percent > worst) worst = zfsPools[j].percent
-        }
-        worstUsagePercent = worst
     }
 
     function usageColor(percent) {
@@ -189,7 +194,14 @@ PluginComponent {
 
     function barLabel() {
         if (isLoading) return "..."
-        return worstUsagePercent + "%"
+        return primaryUsagePercent + "%"
+    }
+
+    function togglePool(poolName) {
+        var exp = {}
+        for (var k in expandedPools) exp[k] = expandedPools[k]
+        exp[poolName] = !exp[poolName]
+        expandedPools = exp
     }
 
     // ── Horizontal bar pill ─────────────────────────────────────────
@@ -200,14 +212,14 @@ PluginComponent {
             DankIcon {
                 name: "hard_drive"
                 size: Theme.fontSizeLarge
-                color: root.usageColor(root.worstUsagePercent)
+                color: root.usageColor(root.primaryUsagePercent)
                 anchors.verticalCenter: parent.verticalCenter
             }
 
             StyledText {
                 text: root.barLabel()
                 font.pixelSize: Theme.fontSizeMedium
-                color: root.usageColor(root.worstUsagePercent)
+                color: root.usageColor(root.primaryUsagePercent)
                 anchors.verticalCenter: parent.verticalCenter
             }
         }
@@ -221,14 +233,14 @@ PluginComponent {
             DankIcon {
                 name: "hard_drive"
                 size: Theme.fontSizeLarge
-                color: root.usageColor(root.worstUsagePercent)
+                color: root.usageColor(root.primaryUsagePercent)
                 anchors.horizontalCenter: parent.horizontalCenter
             }
 
             StyledText {
                 text: root.barLabel()
                 font.pixelSize: Theme.fontSizeSmall
-                color: root.usageColor(root.worstUsagePercent)
+                color: root.usageColor(root.primaryUsagePercent)
                 anchors.horizontalCenter: parent.horizontalCenter
             }
         }
@@ -269,21 +281,21 @@ PluginComponent {
                 visible: root.isLoading
             }
 
-            // ── Partitions section ──────────────────────────────────
+            // ── System Storage (important mounts) ───────────────────
             Column {
                 width: parent.width
                 spacing: Theme.spacingS
-                visible: root.showPartitions && root.partitions.length > 0
+                visible: root.importantMounts.length > 0
 
                 StyledText {
-                    text: "Partitions"
+                    text: "System Storage"
                     font.pixelSize: Theme.fontSizeMedium
                     font.weight: Font.Medium
                     color: Theme.surfaceVariantText
                 }
 
                 Repeater {
-                    model: root.partitions
+                    model: root.importantMounts
 
                     StyledRect {
                         width: parent.width
@@ -298,33 +310,41 @@ PluginComponent {
 
                             Item {
                                 width: parent.width
-                                height: mountText.implicitHeight
+                                height: sysMountText.implicitHeight
 
-                                StyledText {
-                                    id: mountText
-                                    text: modelData.mount
-                                    font.pixelSize: Theme.fontSizeMedium
-                                    font.weight: Font.Medium
-                                    color: Theme.surfaceText
-                                    elide: Text.ElideMiddle
+                                Row {
                                     anchors.left: parent.left
-                                    anchors.right: usedText.left
-                                    anchors.rightMargin: Theme.spacingS
                                     anchors.verticalCenter: parent.verticalCenter
+                                    spacing: Theme.spacingXS
+
+                                    DankIcon {
+                                        name: modelData.fstype === "zfs" ? "database" : "hard_drive"
+                                        size: Theme.fontSizeSmall
+                                        color: Theme.surfaceVariantText
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        visible: modelData.fstype === "zfs"
+                                    }
+
+                                    StyledText {
+                                        id: sysMountText
+                                        text: modelData.mount
+                                        font.pixelSize: Theme.fontSizeMedium
+                                        font.weight: Font.Medium
+                                        color: Theme.surfaceText
+                                    }
                                 }
 
                                 StyledText {
-                                    id: usedText
                                     text: modelData.used + " / " + modelData.size
                                     font.pixelSize: Theme.fontSizeSmall
                                     color: Theme.surfaceVariantText
-                                    anchors.right: percentText.left
+                                    anchors.right: sysPercentText.left
                                     anchors.rightMargin: Theme.spacingS
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
 
                                 StyledText {
-                                    id: percentText
+                                    id: sysPercentText
                                     text: modelData.percent + "%"
                                     font.pixelSize: Theme.fontSizeMedium
                                     font.weight: Font.Bold
@@ -334,7 +354,6 @@ PluginComponent {
                                 }
                             }
 
-                            // Usage bar
                             Rectangle {
                                 width: parent.width
                                 height: 4
@@ -353,11 +372,11 @@ PluginComponent {
                 }
             }
 
-            // ── ZFS pools section ───────────────────────────────────
+            // ── ZFS Pools (expandable) ──────────────────────────────
             Column {
                 width: parent.width
                 spacing: Theme.spacingS
-                visible: root.showZfs && root.zfsPools.length > 0
+                visible: root.showZfs && root.zfsPoolGroups.length > 0
 
                 StyledText {
                     text: "ZFS Pools"
@@ -367,7 +386,174 @@ PluginComponent {
                 }
 
                 Repeater {
-                    model: root.zfsPools
+                    model: root.zfsPoolGroups
+
+                    Column {
+                        width: parent.width
+                        spacing: Theme.spacingXS
+
+                        // Pool header (clickable)
+                        StyledRect {
+                            width: parent.width
+                            height: 44
+                            radius: Theme.cornerRadius
+                            color: Theme.surfaceContainerHigh
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.togglePool(modelData.poolName)
+                            }
+
+                            Item {
+                                anchors.fill: parent
+                                anchors.margins: Theme.spacingS
+
+                                Row {
+                                    anchors.left: parent.left
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: Theme.spacingS
+
+                                    DankIcon {
+                                        name: "database"
+                                        size: Theme.fontSizeMedium
+                                        color: Theme.primary
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+
+                                    StyledText {
+                                        text: modelData.poolName
+                                        font.pixelSize: Theme.fontSizeMedium
+                                        font.weight: Font.Medium
+                                        color: Theme.surfaceText
+                                    }
+
+                                    StyledText {
+                                        text: modelData.datasets.length + " datasets"
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        color: Theme.surfaceVariantText
+                                    }
+                                }
+
+                                Row {
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: Theme.spacingS
+
+                                    StyledText {
+                                        text: modelData.freeSpace + " free"
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        color: Theme.surfaceVariantText
+                                    }
+
+                                    DankIcon {
+                                        name: "chevron_right"
+                                        size: Theme.fontSizeMedium
+                                        color: Theme.surfaceVariantText
+                                        rotation: !!root.expandedPools[modelData.poolName] ? 90 : 0
+                                        Behavior on rotation { NumberAnimation { duration: 150 } }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Expanded datasets
+                        Column {
+                            width: parent.width
+                            spacing: Theme.spacingXS
+                            visible: !!root.expandedPools[modelData.poolName]
+
+                            Repeater {
+                                model: modelData.datasets
+
+                                StyledRect {
+                                    width: parent.width
+                                    height: 48
+                                    radius: Theme.cornerRadius
+                                    color: Theme.surfaceContainer
+
+                                    Column {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: Theme.spacingL
+                                        anchors.rightMargin: Theme.spacingS
+                                        anchors.topMargin: Theme.spacingXS
+                                        anchors.bottomMargin: Theme.spacingXS
+                                        spacing: Theme.spacingXS
+
+                                        Item {
+                                            width: parent.width
+                                            height: dsNameText.implicitHeight
+
+                                            StyledText {
+                                                id: dsNameText
+                                                text: modelData.mount
+                                                font.pixelSize: Theme.fontSizeSmall
+                                                font.weight: Font.Medium
+                                                color: Theme.surfaceText
+                                                elide: Text.ElideMiddle
+                                                anchors.left: parent.left
+                                                anchors.right: dsUsedText.left
+                                                anchors.rightMargin: Theme.spacingS
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+
+                                            StyledText {
+                                                id: dsUsedText
+                                                text: modelData.used + " / " + modelData.size
+                                                font.pixelSize: Theme.fontSizeSmall
+                                                color: Theme.surfaceVariantText
+                                                anchors.right: dsPercentText.left
+                                                anchors.rightMargin: Theme.spacingS
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+
+                                            StyledText {
+                                                id: dsPercentText
+                                                text: modelData.percent + "%"
+                                                font.pixelSize: Theme.fontSizeSmall
+                                                font.weight: Font.Bold
+                                                color: root.usageColor(modelData.percent)
+                                                anchors.right: parent.right
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            width: parent.width
+                                            height: 3
+                                            radius: 2
+                                            color: Theme.withAlpha(Theme.surfaceText, 0.1)
+
+                                            Rectangle {
+                                                width: parent.width * (modelData.percent / 100)
+                                                height: parent.height
+                                                radius: 2
+                                                color: root.usageColor(modelData.percent)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Other filesystems ───────────────────────────────────
+            Column {
+                width: parent.width
+                spacing: Theme.spacingS
+                visible: root.showPartitions && root.otherMounts.length > 0
+
+                StyledText {
+                    text: "Other"
+                    font.pixelSize: Theme.fontSizeMedium
+                    font.weight: Font.Medium
+                    color: Theme.surfaceVariantText
+                }
+
+                Repeater {
+                    model: root.otherMounts
 
                     StyledRect {
                         width: parent.width
@@ -382,48 +568,33 @@ PluginComponent {
 
                             Item {
                                 width: parent.width
-                                height: zpoolNameText.implicitHeight
-
-                                Row {
-                                    id: zpoolLeftRow
-                                    spacing: Theme.spacingS
-                                    anchors.left: parent.left
-                                    anchors.verticalCenter: parent.verticalCenter
-
-                                    DankIcon {
-                                        name: "database"
-                                        size: Theme.fontSizeMedium
-                                        color: modelData.health === "ONLINE" ? Theme.primary : "#ff4444"
-                                        anchors.verticalCenter: parent.verticalCenter
-                                    }
-
-                                    StyledText {
-                                        id: zpoolNameText
-                                        text: modelData.name
-                                        font.pixelSize: Theme.fontSizeMedium
-                                        font.weight: Font.Medium
-                                        color: Theme.surfaceText
-                                    }
-
-                                    StyledText {
-                                        text: modelData.health
-                                        font.pixelSize: Theme.fontSizeSmall
-                                        color: modelData.health === "ONLINE" ? Theme.primary : "#ff4444"
-                                        font.weight: Font.Medium
-                                    }
-                                }
+                                height: otherMountText.implicitHeight
 
                                 StyledText {
-                                    text: modelData.alloc + " / " + modelData.size
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    color: Theme.surfaceVariantText
-                                    anchors.right: zpoolPercentText.left
+                                    id: otherMountText
+                                    text: modelData.mount
+                                    font.pixelSize: Theme.fontSizeMedium
+                                    font.weight: Font.Medium
+                                    color: Theme.surfaceText
+                                    elide: Text.ElideMiddle
+                                    anchors.left: parent.left
+                                    anchors.right: otherUsedText.left
                                     anchors.rightMargin: Theme.spacingS
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
 
                                 StyledText {
-                                    id: zpoolPercentText
+                                    id: otherUsedText
+                                    text: modelData.used + " / " + modelData.size
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: Theme.surfaceVariantText
+                                    anchors.right: otherPercentText.left
+                                    anchors.rightMargin: Theme.spacingS
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+
+                                StyledText {
+                                    id: otherPercentText
                                     text: modelData.percent + "%"
                                     font.pixelSize: Theme.fontSizeMedium
                                     font.weight: Font.Bold
@@ -433,7 +604,6 @@ PluginComponent {
                                 }
                             }
 
-                            // Usage bar
                             Rectangle {
                                 width: parent.width
                                 height: 4
@@ -471,42 +641,47 @@ PluginComponent {
                     radius: Theme.cornerRadius
                     color: Theme.surfaceContainerHigh
 
-                    Row {
+                    Item {
                         anchors.fill: parent
                         anchors.margins: Theme.spacingS
-                        spacing: Theme.spacingS
 
-                        DankIcon {
-                            name: "snowflake"
-                            size: Theme.fontSizeMedium
-                            color: Theme.primary
+                        Row {
+                            anchors.left: parent.left
                             anchors.verticalCenter: parent.verticalCenter
-                        }
+                            spacing: Theme.spacingS
 
-                        StyledText {
-                            text: "/nix/store"
-                            font.pixelSize: Theme.fontSizeMedium
-                            font.weight: Font.Medium
-                            color: Theme.surfaceText
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
+                            DankIcon {
+                                name: "snowflake"
+                                size: Theme.fontSizeMedium
+                                color: Theme.primary
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
 
-                        Item { width: 1; height: 1 }
+                            StyledText {
+                                text: "/nix/store"
+                                font.pixelSize: Theme.fontSizeMedium
+                                font.weight: Font.Medium
+                                color: Theme.surfaceText
+                            }
+                        }
 
                         StyledText {
                             text: root.nixStoreInfo ? (root.nixStoreInfo.paths + " paths") : ""
                             font.pixelSize: Theme.fontSizeSmall
                             color: Theme.surfaceVariantText
+                            anchors.right: nixSizeText.left
+                            anchors.rightMargin: Theme.spacingS
                             anchors.verticalCenter: parent.verticalCenter
                         }
 
                         StyledText {
+                            id: nixSizeText
                             text: root.nixStoreInfo ? root.nixStoreInfo.size : ""
                             font.pixelSize: Theme.fontSizeMedium
                             font.weight: Font.Bold
                             color: Theme.primary
-                            anchors.verticalCenter: parent.verticalCenter
                             anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
                         }
                     }
                 }
@@ -518,13 +693,14 @@ PluginComponent {
                 color: Theme.surfaceVariantText
                 font.pixelSize: Theme.fontSizeMedium
                 visible: !root.isLoading
-                         && root.partitions.length === 0
-                         && root.zfsPools.length === 0
+                         && root.importantMounts.length === 0
+                         && root.zfsPoolGroups.length === 0
+                         && root.otherMounts.length === 0
                          && root.nixStoreInfo === null
             }
         }
     }
 
     popoutWidth: 400
-    popoutHeight: 480
+    popoutHeight: 520
 }
