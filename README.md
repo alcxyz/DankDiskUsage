@@ -27,7 +27,7 @@ inputs.dms-plugin-diskusage = {
 ```
 
 ```nix
-programs.dank-material-shell.plugins.DankDiskUsage = {
+programs.dank-material-shell.plugins.dankDiskUsage = {
   enable = true;
   src = inputs.dms-plugin-diskusage;
 };
