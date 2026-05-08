@@ -1,6 +1,6 @@
 # DankDiskUsage
 
-A bar widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) that monitors disk, ZFS pool, and Nix store usage with smart mount classification and expandable detail.
+A bar widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) that monitors disk, ZFS pool, and Nix closure usage with smart mount classification and expandable detail.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -9,7 +9,7 @@ A bar widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankM
 - Smart mount priority: system paths (/, /home, /nix, /var, /boot) are shown prominently in "System Storage"
 - Bar pill shows the most important mount's usage percentage
 - ZFS datasets grouped by pool with expandable detail views
-- Nix store path count and size
+- Current NixOS system closure path count and size
 - Color-coded usage bars with configurable warning/critical thresholds
 - Excludes tmpfs, devtmpfs, overlay, and fuse mounts automatically
 
@@ -46,7 +46,7 @@ Copy the plugin directory to `~/.config/DankMaterialShell/plugins/DankDiskUsage/
 | Critical threshold | 95% | Usage percentage for red indicator |
 | Show partitions | true | Display non-ZFS, non-system filesystems |
 | Show ZFS pools | true | Group ZFS datasets by pool with expandable detail |
-| Show Nix store | true | Display /nix/store size and path count |
+| Show Nix closure | true | Display current system closure size and path count |
 | Excluded mountpoints | [] | Mountpoints to hide from the display |
 
 ## License
