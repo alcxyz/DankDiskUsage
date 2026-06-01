@@ -147,10 +147,10 @@ PluginComponent {
         }
     }
 
-    // ── Nix store info ────────────────────────────────────────────────
+    // ── Nix current-system closure info ───────────────────────────────
     property Process nixPathCountProcess: Process {
         running: false
-        command: ["sh", "-c", "nix-store --query --requisites /run/current-system 2>/dev/null | wc -l | tr -d ' '; df -h --output=used /nix/store 2>/dev/null | tail -1 | tr -d ' '"]
+        command: ["sh", "-c", "reqs=$(nix-store --query --requisites /run/current-system 2>/dev/null); count=$(printf '%s\\n' \"$reqs\" | sed '/^$/d' | wc -l | tr -d ' '); size=$(nix path-info --closure-size --human-readable /run/current-system 2>/dev/null | awk '{print $(NF-1) \" \" $NF}'); if [ -z \"$size\" ]; then size=$(printf '%s\\n' \"$reqs\" | xargs nix-store --query --size 2>/dev/null | awk 'function human(b){split(\"B KiB MiB GiB TiB\",u); i=1; while (b>=1024 && i<5){b/=1024; i++} return sprintf(b>=10 || i==1 ? \"%.0f %s\" : \"%.1f %s\", b, u[i])} {s += $1} END {if (s > 0) print human(s); else print \"?\"}'); fi; printf '%s\\n%s\\n' \"$count\" \"${size:-?}\""]
 
         stdout: StdioCollector {
             onStreamFinished: {
@@ -663,14 +663,14 @@ PluginComponent {
                 }
             }
 
-            // ── Nix store section ───────────────────────────────────
+            // ── Nix current-system closure section ──────────────────
             Column {
                 width: parent.width
                 spacing: Theme.spacingS
                 visible: root.showNixStore && root.nixStoreInfo !== null
 
                 StyledText {
-                    text: "Nix Store"
+                    text: "Nix Closure"
                     font.pixelSize: Theme.fontSizeMedium
                     font.weight: Font.Medium
                     color: Theme.surfaceVariantText
@@ -700,11 +700,11 @@ PluginComponent {
                                 anchors.verticalCenter: parent.verticalCenter
                             }
 
-                            StyledText {
-                                text: "/nix/store"
-                                width: parent.width - Theme.fontSizeMedium - Theme.spacingS
-                                font.pixelSize: Theme.fontSizeMedium
-                                font.weight: Font.Medium
+	                            StyledText {
+	                                text: "Current system"
+	                                width: parent.width - Theme.fontSizeMedium - Theme.spacingS
+	                                font.pixelSize: Theme.fontSizeMedium
+	                                font.weight: Font.Medium
                                 color: Theme.surfaceText
                                 elide: Text.ElideRight
                                 maximumLineCount: 1
