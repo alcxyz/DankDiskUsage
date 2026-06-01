@@ -258,22 +258,30 @@ PluginComponent {
             spacing: Theme.spacingL
 
             // ── Header ──────────────────────────────────────────────
-            Row {
+            Item {
                 width: parent.width
-                spacing: Theme.spacingS
+                height: Math.max(diskHeader.implicitHeight, 28)
 
                 StyledText {
+                    id: diskHeader
                     text: "Disk Usage"
-                    font.pixelSize: Theme.fontSizeXLarge
+                    font.pixelSize: Theme.fontSizeLarge
                     font.weight: Font.Bold
                     color: Theme.surfaceText
+                    anchors.left: parent.left
+                    anchors.right: diskRefresh.left
+                    anchors.rightMargin: Theme.spacingS
                     anchors.verticalCenter: parent.verticalCenter
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
                 }
 
                 DankActionButton {
+                    id: diskRefresh
                     buttonSize: 28
                     iconName: "refresh"
                     iconColor: Theme.surfaceVariantText
+                    anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     onClicked: root.refreshAll()
                 }
@@ -320,6 +328,8 @@ PluginComponent {
 
                                 Row {
                                     anchors.left: parent.left
+                                    anchors.right: sysUsedText.left
+                                    anchors.rightMargin: Theme.spacingS
                                     anchors.verticalCenter: parent.verticalCenter
                                     spacing: Theme.spacingXS
 
@@ -334,19 +344,25 @@ PluginComponent {
                                     StyledText {
                                         id: sysMountText
                                         text: modelData.mount
+                                        width: parent.width - (modelData.fstype === "zfs" ? Theme.fontSizeSmall + Theme.spacingXS : 0)
                                         font.pixelSize: Theme.fontSizeMedium
                                         font.weight: Font.Medium
                                         color: Theme.surfaceText
+                                        elide: Text.ElideMiddle
+                                        maximumLineCount: 1
                                     }
                                 }
 
                                 StyledText {
+                                    id: sysUsedText
                                     text: modelData.used + " / " + modelData.size
                                     font.pixelSize: Theme.fontSizeSmall
                                     color: Theme.surfaceVariantText
                                     anchors.right: sysPercentText.left
                                     anchors.rightMargin: Theme.spacingS
                                     anchors.verticalCenter: parent.verticalCenter
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
                                 }
 
                                 StyledText {
@@ -357,6 +373,8 @@ PluginComponent {
                                     color: root.usageColor(modelData.percent)
                                     anchors.right: parent.right
                                     anchors.verticalCenter: parent.verticalCenter
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
                                 }
                             }
 
@@ -417,6 +435,8 @@ PluginComponent {
 
                                 Row {
                                     anchors.left: parent.left
+                                    anchors.right: poolRightRow.left
+                                    anchors.rightMargin: Theme.spacingS
                                     anchors.verticalCenter: parent.verticalCenter
                                     spacing: Theme.spacingS
 
@@ -429,19 +449,24 @@ PluginComponent {
 
                                     StyledText {
                                         text: modelData.poolName
+                                        width: parent.width - Theme.fontSizeMedium - Theme.spacingS
                                         font.pixelSize: Theme.fontSizeMedium
                                         font.weight: Font.Medium
                                         color: Theme.surfaceText
+                                        elide: Text.ElideMiddle
+                                        maximumLineCount: 1
                                     }
 
                                     StyledText {
                                         text: modelData.datasets.length + " datasets"
                                         font.pixelSize: Theme.fontSizeSmall
                                         color: Theme.surfaceVariantText
+                                        visible: false
                                     }
                                 }
 
                                 Row {
+                                    id: poolRightRow
                                     anchors.right: parent.right
                                     anchors.verticalCenter: parent.verticalCenter
                                     spacing: Theme.spacingS
@@ -450,6 +475,8 @@ PluginComponent {
                                         text: modelData.freeSpace + " free"
                                         font.pixelSize: Theme.fontSizeSmall
                                         color: Theme.surfaceVariantText
+                                        elide: Text.ElideRight
+                                        maximumLineCount: 1
                                     }
 
                                     DankIcon {
@@ -511,6 +538,8 @@ PluginComponent {
                                                 anchors.right: dsPercentText.left
                                                 anchors.rightMargin: Theme.spacingS
                                                 anchors.verticalCenter: parent.verticalCenter
+                                                elide: Text.ElideRight
+                                                maximumLineCount: 1
                                             }
 
                                             StyledText {
@@ -521,6 +550,8 @@ PluginComponent {
                                                 color: root.usageColor(modelData.percent)
                                                 anchors.right: parent.right
                                                 anchors.verticalCenter: parent.verticalCenter
+                                                elide: Text.ElideRight
+                                                maximumLineCount: 1
                                             }
                                         }
 
@@ -597,6 +628,8 @@ PluginComponent {
                                     anchors.right: otherPercentText.left
                                     anchors.rightMargin: Theme.spacingS
                                     anchors.verticalCenter: parent.verticalCenter
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
                                 }
 
                                 StyledText {
@@ -607,6 +640,8 @@ PluginComponent {
                                     color: root.usageColor(modelData.percent)
                                     anchors.right: parent.right
                                     anchors.verticalCenter: parent.verticalCenter
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
                                 }
                             }
 
@@ -653,6 +688,8 @@ PluginComponent {
 
                         Row {
                             anchors.left: parent.left
+                            anchors.right: nixPathsText.left
+                            anchors.rightMargin: Theme.spacingS
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: Theme.spacingS
 
@@ -663,21 +700,27 @@ PluginComponent {
                                 anchors.verticalCenter: parent.verticalCenter
                             }
 
-                            StyledText {
-                                text: "Current system"
-                                font.pixelSize: Theme.fontSizeMedium
-                                font.weight: Font.Medium
+	                            StyledText {
+	                                text: "Current system"
+	                                width: parent.width - Theme.fontSizeMedium - Theme.spacingS
+	                                font.pixelSize: Theme.fontSizeMedium
+	                                font.weight: Font.Medium
                                 color: Theme.surfaceText
+                                elide: Text.ElideRight
+                                maximumLineCount: 1
                             }
                         }
 
                         StyledText {
+                            id: nixPathsText
                             text: root.nixStoreInfo ? (root.nixStoreInfo.paths + " paths") : ""
                             font.pixelSize: Theme.fontSizeSmall
                             color: Theme.surfaceVariantText
                             anchors.right: nixSizeText.left
                             anchors.rightMargin: Theme.spacingS
                             anchors.verticalCenter: parent.verticalCenter
+                            elide: Text.ElideRight
+                            maximumLineCount: 1
                         }
 
                         StyledText {
@@ -688,6 +731,8 @@ PluginComponent {
                             color: Theme.primary
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
+                            elide: Text.ElideRight
+                            maximumLineCount: 1
                         }
                     }
                 }
