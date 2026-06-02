@@ -30,6 +30,7 @@ PluginComponent {
     property var zfsPoolGroups: []
     property var otherMounts: []
     property var nixStoreInfo: null
+    property bool isScanningNixStore: false
     property int primaryUsagePercent: 0
     property var expandedPools: ({})
 
@@ -55,6 +56,8 @@ PluginComponent {
         if (!pluginService) return
         var cached = pluginService.loadPluginState("dankDiskUsage", "nixStoreCache", null)
         if (cached && cached.paths !== undefined) {
+            if (cached.closureSize === undefined && cached.size !== undefined)
+                cached.closureSize = cached.size
             nixStoreInfo = cached
         }
     }
@@ -79,6 +82,12 @@ PluginComponent {
     function refreshAll() {
         if (!dfProcess.running) dfProcess.running = true
         if (root.showNixStore && !nixPathCountProcess.running) nixPathCountProcess.running = true
+    }
+
+    function scanNixStoreSize() {
+        if (!root.showNixStore || nixStoreSizeProcess.running) return
+        root.isScanningNixStore = true
+        nixStoreSizeProcess.running = true
     }
 
     // ── df: all filesystems ─────────────────────────────────────────
@@ -157,8 +166,37 @@ PluginComponent {
                 var lines = text.trim().split("\n")
                 var count = parseInt(lines[0]) || 0
                 var size = (lines.length >= 2 && lines[1]) ? lines[1] : "?"
-                var info = { paths: count, size: size }
+                var current = root.nixStoreInfo || {}
+                var info = {
+                    paths: count,
+                    closureSize: size,
+                    storeSize: current.storeSize || "",
+                    storeSizeScannedAt: current.storeSizeScannedAt || ""
+                }
                 root.nixStoreInfo = info
+                if (root.pluginService)
+                    root.pluginService.savePluginState("dankDiskUsage", "nixStoreCache", info)
+            }
+        }
+    }
+
+    // ── Nix total store size: manual only to avoid background store walks ──
+    property Process nixStoreSizeProcess: Process {
+        running: false
+        command: ["sh", "-c", "du -sh /nix/store 2>/dev/null | cut -f1"]
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var size = text.trim() || "?"
+                var current = root.nixStoreInfo || {}
+                var info = {
+                    paths: current.paths || 0,
+                    closureSize: current.closureSize || current.size || "?",
+                    storeSize: size,
+                    storeSizeScannedAt: new Date().toISOString()
+                }
+                root.nixStoreInfo = info
+                root.isScanningNixStore = false
                 if (root.pluginService)
                     root.pluginService.savePluginState("dankDiskUsage", "nixStoreCache", info)
             }
@@ -663,76 +701,141 @@ PluginComponent {
                 }
             }
 
-            // ── Nix current-system closure section ──────────────────
+            // ── Nix section ─────────────────────────────────────────
             Column {
                 width: parent.width
                 spacing: Theme.spacingS
                 visible: root.showNixStore && root.nixStoreInfo !== null
 
-                StyledText {
-                    text: "Nix Closure"
-                    font.pixelSize: Theme.fontSizeMedium
-                    font.weight: Font.Medium
-                    color: Theme.surfaceVariantText
+                Item {
+                    width: parent.width
+                    height: Math.max(nixHeader.implicitHeight, 24)
+
+                    StyledText {
+                        id: nixHeader
+                        text: "Nix"
+                        font.pixelSize: Theme.fontSizeMedium
+                        font.weight: Font.Medium
+                        color: Theme.surfaceVariantText
+                        anchors.left: parent.left
+                        anchors.right: nixStoreScan.left
+                        anchors.rightMargin: Theme.spacingS
+                        anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideRight
+                        maximumLineCount: 1
+                    }
+
+                    DankActionButton {
+                        id: nixStoreScan
+                        buttonSize: 24
+                        iconName: "refresh"
+                        iconColor: root.isScanningNixStore ? Theme.primary : Theme.surfaceVariantText
+                        opacity: root.isScanningNixStore ? 0.5 : 1.0
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        onClicked: root.scanNixStoreSize()
+                    }
                 }
 
                 StyledRect {
                     width: parent.width
-                    height: 48
+                    height: 104
                     radius: Theme.cornerRadius
                     color: Theme.surfaceContainerHigh
 
-                    Item {
+                    Column {
                         anchors.fill: parent
                         anchors.margins: Theme.spacingS
+                        spacing: Theme.spacingXS
 
-                        Row {
-                            anchors.left: parent.left
-                            anchors.right: nixPathsText.left
-                            anchors.rightMargin: Theme.spacingS
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: Theme.spacingS
+                        Item {
+                            width: parent.width
+                            height: 26
 
-                            DankIcon {
-                                name: "snowflake"
-                                size: Theme.fontSizeMedium
-                                color: Theme.primary
+                            StyledText {
+                                text: "Store total"
+                                font.pixelSize: Theme.fontSizeMedium
+                                font.weight: Font.Medium
+                                color: Theme.surfaceText
+                                anchors.left: parent.left
+                                anchors.right: nixStoreSizeText.left
+                                anchors.rightMargin: Theme.spacingS
                                 anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                maximumLineCount: 1
                             }
 
-	                            StyledText {
-	                                text: "Current system"
-	                                width: parent.width - Theme.fontSizeMedium - Theme.spacingS
-	                                font.pixelSize: Theme.fontSizeMedium
-	                                font.weight: Font.Medium
-                                color: Theme.surfaceText
+                            StyledText {
+                                id: nixStoreSizeText
+                                text: root.isScanningNixStore
+                                      ? "Scanning..."
+                                      : (root.nixStoreInfo && root.nixStoreInfo.storeSize ? root.nixStoreInfo.storeSize : "Not scanned")
+                                font.pixelSize: Theme.fontSizeMedium
+                                font.weight: Font.Bold
+                                color: root.nixStoreInfo && root.nixStoreInfo.storeSize ? Theme.primary : Theme.surfaceVariantText
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
                                 elide: Text.ElideRight
                                 maximumLineCount: 1
                             }
                         }
 
-                        StyledText {
-                            id: nixPathsText
-                            text: root.nixStoreInfo ? (root.nixStoreInfo.paths + " paths") : ""
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: Theme.surfaceVariantText
-                            anchors.right: nixSizeText.left
-                            anchors.rightMargin: Theme.spacingS
-                            anchors.verticalCenter: parent.verticalCenter
-                            elide: Text.ElideRight
-                            maximumLineCount: 1
+                        Item {
+                            width: parent.width
+                            height: 24
+
+                            StyledText {
+                                text: "Current generation"
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.surfaceVariantText
+                                anchors.left: parent.left
+                                anchors.right: nixClosureSizeText.left
+                                anchors.rightMargin: Theme.spacingS
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                maximumLineCount: 1
+                            }
+
+                            StyledText {
+                                id: nixClosureSizeText
+                                text: root.nixStoreInfo ? (root.nixStoreInfo.closureSize || root.nixStoreInfo.size || "?") : ""
+                                font.pixelSize: Theme.fontSizeSmall
+                                font.weight: Font.Medium
+                                color: Theme.surfaceText
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                maximumLineCount: 1
+                            }
                         }
 
-                        StyledText {
-                            id: nixSizeText
-                            text: root.nixStoreInfo ? root.nixStoreInfo.size : ""
-                            font.pixelSize: Theme.fontSizeMedium
-                            font.weight: Font.Bold
-                            color: Theme.primary
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            elide: Text.ElideRight
-                            maximumLineCount: 1
+                        Item {
+                            width: parent.width
+                            height: 24
+
+                            StyledText {
+                                text: "Current paths"
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.surfaceVariantText
+                                anchors.left: parent.left
+                                anchors.right: nixPathsText.left
+                                anchors.rightMargin: Theme.spacingS
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                maximumLineCount: 1
+                            }
+
+                            StyledText {
+                                id: nixPathsText
+                                text: root.nixStoreInfo ? (root.nixStoreInfo.paths + " paths") : ""
+                                font.pixelSize: Theme.fontSizeSmall
+                                font.weight: Font.Medium
+                                color: Theme.surfaceText
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                maximumLineCount: 1
+                            }
                         }
                     }
                 }

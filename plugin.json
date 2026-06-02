@@ -1,7 +1,7 @@
 {
   "id": "dankDiskUsage",
   "name": "Disk Usage",
-  "description": "Monitor disk, ZFS pool, and Nix closure usage with visual indicators",
+  "description": "Monitor disk, ZFS pool, and Nix store usage with visual indicators",
   "version": "0.2.1",
   "author": "alcxyz",
   "icon": "hard_drive",

@@ -1,6 +1,6 @@
 # DankDiskUsage
 
-A bar widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) that monitors disk, ZFS pool, and Nix closure usage with smart mount classification and expandable detail.
+A bar widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) that monitors disk, ZFS pool, and Nix store usage with smart mount classification and expandable detail.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -9,7 +9,7 @@ A bar widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankM
 - Smart mount priority: system paths (/, /home, /nix, /var, /boot) are shown prominently in "System Storage"
 - Bar pill shows the most important mount's usage percentage
 - ZFS datasets grouped by pool with expandable detail views
-- Current NixOS system closure path count and size
+- Nix store total size on demand, plus current NixOS generation path count and closure size
 - Color-coded usage bars with configurable warning/critical thresholds
 - Excludes tmpfs, devtmpfs, overlay, and fuse mounts automatically
 
@@ -39,6 +39,8 @@ Copy the plugin directory to `~/.config/DankMaterialShell/plugins/DankDiskUsage/
 
 ## Settings
 
+The Nix section refreshes current generation closure details automatically. The full `/nix/store` size is cached and only rescanned when you click the Nix section refresh button, because walking the whole store can be expensive.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Refresh interval | 30s | How often to poll disk usage data |
@@ -46,7 +48,7 @@ Copy the plugin directory to `~/.config/DankMaterialShell/plugins/DankDiskUsage/
 | Critical threshold | 95% | Usage percentage for red indicator |
 | Show partitions | true | Display non-ZFS, non-system filesystems |
 | Show ZFS pools | true | Group ZFS datasets by pool with expandable detail |
-| Show Nix closure | true | Display current system closure size and path count |
+| Show Nix info | true | Display cached store size plus current generation closure details |
 | Excluded mountpoints | [] | Mountpoints to hide from the display |
 
 ## License
