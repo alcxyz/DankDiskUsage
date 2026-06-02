@@ -51,8 +51,8 @@ PluginSettings {
 
     ToggleSetting {
         settingKey: "showNixStore"
-        label: "Show Nix closure"
-        description: "Display current system closure size and path count"
+        label: "Show Nix info"
+        description: "Display cached store size plus current generation closure details"
         defaultValue: true
     }
 
