@@ -12,6 +12,7 @@ A bar widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankM
 - Nix store total size on demand, plus current NixOS generation path count and closure size
 - Color-coded usage bars with configurable warning/critical thresholds
 - Excludes tmpfs, devtmpfs, overlay, and fuse mounts automatically
+- User-defined exclusions for mountpoints and ZFS datasets, with `*` wildcard support
 
 ## Installation
 
@@ -49,7 +50,7 @@ The Nix section refreshes current generation closure details automatically. The 
 | Show partitions | true | Display non-ZFS, non-system filesystems |
 | Show ZFS pools | true | Group ZFS datasets by pool with expandable detail |
 | Show Nix info | true | Display cached store size plus current generation closure details |
-| Excluded mountpoints | [] | Mountpoints to hide from the display |
+| Excluded mountpoints or datasets | [] | Mountpoints or ZFS datasets to hide; supports `*` wildcards such as `/run/user/1000/*` |
 
 ## License
 

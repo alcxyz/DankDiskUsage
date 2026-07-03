@@ -2,7 +2,7 @@
   "id": "dankDiskUsage",
   "name": "Disk Usage",
   "description": "Monitor disk, ZFS pool, and Nix store usage with visual indicators",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": "alcxyz",
   "icon": "hard_drive",
   "component": "./DankDiskUsageWidget.qml",
