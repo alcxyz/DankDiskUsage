@@ -43,7 +43,7 @@ PluginComponent {
         showZfs = pluginService.loadPluginData("dankDiskUsage", "showZfs", true) !== false
         showNixStore = pluginService.loadPluginData("dankDiskUsage", "showNixStore", true) !== false
         var saved = pluginService.loadPluginData("dankDiskUsage", "excludeMounts", [])
-        excludeMounts = (saved && Array.isArray(saved)) ? saved : []
+        excludeMounts = root.normalizeExcludeMounts(saved)
     }
 
     Component.onCompleted: {
@@ -102,17 +102,17 @@ PluginComponent {
                 for (var i = 0; i < lines.length; i++) {
                     var parts = lines[i].trim().split(/\s+/)
                     if (parts.length < 7) continue
-                    var mount = parts.slice(6).join(" ")
-                    if (root.isExcluded(mount)) continue
-                    all.push({
+                    var entry = {
                         device: parts[0],
                         fstype: parts[1],
                         size: parts[2],
                         used: parts[3],
                         avail: parts[4],
                         percent: parseInt(parts[5].replace("%", "")) || 0,
-                        mount: mount
-                    })
+                        mount: parts.slice(6).join(" ")
+                    }
+                    if (root.isExcluded(entry)) continue
+                    all.push(entry)
                 }
 
                 var important = []
@@ -204,11 +204,69 @@ PluginComponent {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
-    function isExcluded(mount) {
+    function normalizeExcludeMounts(saved) {
+        if (!saved || !Array.isArray(saved)) return []
+        var normalized = []
+        for (var i = 0; i < saved.length; i++) {
+            var entry = saved[i]
+            var value = ""
+            if (typeof entry === "string") {
+                value = entry
+            } else if (entry && typeof entry.value === "string") {
+                value = entry.value
+            } else if (entry && typeof entry.mount === "string") {
+                value = entry.mount
+            } else if (entry && typeof entry.pattern === "string") {
+                value = entry.pattern
+            }
+            value = root.normalizeExcludeValue(value)
+            if (value.length > 0 && normalized.indexOf(value) < 0)
+                normalized.push(value)
+        }
+        return normalized
+    }
+
+    function normalizeExcludeValue(value) {
+        if (typeof value !== "string") return ""
+        var normalized = value.trim()
+        while (normalized.length > 1 && normalized.charAt(normalized.length - 1) === "/")
+            normalized = normalized.substring(0, normalized.length - 1)
+        return normalized
+    }
+
+    function wildcardMatches(pattern, value) {
+        if (pattern.indexOf("*") < 0) return pattern === value
+
+        var parts = pattern.split("*")
+        var pos = 0
+        if (parts[0] && value.indexOf(parts[0]) !== 0) return false
+        pos = parts[0].length
+
+        for (var i = 1; i < parts.length; i++) {
+            var part = parts[i]
+            if (!part) continue
+            var idx = value.indexOf(part, pos)
+            if (idx < 0) return false
+            pos = idx + part.length
+        }
+
+        var last = parts[parts.length - 1]
+        return !last || value.substring(value.length - last.length) === last
+    }
+
+    function isExcludedValue(value) {
+        var normalized = root.normalizeExcludeValue(value)
+        if (!normalized) return false
         for (var i = 0; i < excludeMounts.length; i++) {
-            if (mount === excludeMounts[i]) return true
+            if (root.wildcardMatches(excludeMounts[i], normalized)) return true
         }
         return false
+    }
+
+    function isExcluded(entry) {
+        if (typeof entry === "string")
+            return root.isExcludedValue(entry)
+        return root.isExcludedValue(entry.mount) || root.isExcludedValue(entry.device)
     }
 
     function updatePrimaryUsage() {
