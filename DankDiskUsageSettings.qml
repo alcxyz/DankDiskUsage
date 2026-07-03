@@ -58,10 +58,10 @@ PluginSettings {
 
     ListSettingWithInput {
         settingKey: "excludeMounts"
-        label: "Excluded mountpoints"
-        description: "Mountpoints to hide from the partitions list (e.g. /boot, /mnt/backup)"
+        label: "Excluded mountpoints or datasets"
+        description: "Hide matching mountpoints or ZFS datasets. Supports * wildcards."
         fields: [
-            {id: "value", label: "Mountpoint", placeholder: "e.g., /boot", width: 300, required: true}
+            {id: "value", label: "Pattern", placeholder: "e.g., /boot, /run/user/1000/*, zroot/persist", width: 300, required: true}
         ]
     }
 }
