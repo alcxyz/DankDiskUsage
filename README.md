@@ -37,6 +37,8 @@ programs.dank-material-shell.plugins.dankDiskUsage = {
 ### Manual
 
 Copy the plugin directory to `~/.config/DankMaterialShell/plugins/DankDiskUsage/`.
+For an identifiable development build, stage `dist/dev` first and copy
+`dist/dev/share/dms-plugins/DankDiskUsage/` instead of the raw checkout.
 
 ## Settings
 
@@ -51,6 +53,20 @@ The Nix section refreshes current generation closure details automatically. The 
 | Show ZFS pools | true | Group ZFS datasets by pool with expandable detail |
 | Show Nix info | true | Display cached store size plus current generation closure details |
 | Excluded mountpoints or datasets | [] | Mountpoints or ZFS datasets to hide; supports `*` wildcards such as `/run/user/1000/*` |
+
++## Development builds
+
+The tracked manifest keeps the release version. To stage an identifiable
+development package, run:
+
+```bash
+python3 scripts/package.py --output dist/dev
+```
+
+This produces a manifest version like `X.Y.Z-dev.<commit>`; a dirty checkout
+adds `.dirty`. For Nix, use `pkgs.callPackage ./default.nix { revision = ...; }`.
+Release packaging is guarded and requires a clean checkout at the exact
+`vX.Y.Z` tag.
 
 ## License
 
