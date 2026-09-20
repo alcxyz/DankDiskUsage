@@ -34,6 +34,14 @@
       "type": "boolean",
       "default": true
     },
+    "showBtrfsVolumes": {
+      "type": "boolean",
+      "default": true
+    },
+    "dedupeByDevice": {
+      "type": "boolean",
+      "default": false
+    },
     "showNixStore": {
       "type": "boolean",
       "default": true

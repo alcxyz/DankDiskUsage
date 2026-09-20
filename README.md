@@ -9,6 +9,8 @@ A bar widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankM
 - Smart mount priority: system paths (/, /home, /nix, /var, /boot) are shown prominently in "System Storage"
 - Bar pill shows the most important mount's usage percentage
 - ZFS datasets grouped by pool with expandable detail views
+- Btrfs subvolumes of one filesystem grouped into a single expandable volume, so shared capacity is counted once instead of once per mountpoint
+- Optional same-device merging for the remaining filesystems (bind mounts, volumes mounted twice)
 - Nix store total size on demand, plus current NixOS generation path count and closure size
 - Color-coded usage bars with configurable warning/critical thresholds
 - Excludes tmpfs, devtmpfs, overlay, and fuse mounts automatically
@@ -44,6 +46,12 @@ For an identifiable development build, stage `dist/dev` first and copy
 
 The Nix section refreshes current generation closure details automatically. The full `/nix/store` size is cached and only rescanned when you click the Nix section refresh button, because walking the whole store can be expensive.
 
+`df` reports per mountpoint, so one filesystem mounted at several points is reported once
+per mountpoint with identical figures. **Group Btrfs subvolumes** and **Merge mountpoints
+sharing a device** collapse those duplicates so the popout totals match the physical
+devices; see [ADR-006](docs/adr/ADR-006-device-aware-mount-grouping.md). Only real block
+devices are merged, never pseudo sources such as `none`, ZFS datasets, or network shares.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Refresh interval | 30s | How often to poll disk usage data |
@@ -51,6 +59,8 @@ The Nix section refreshes current generation closure details automatically. The 
 | Critical threshold | 95% | Usage percentage for red indicator |
 | Show partitions | true | Display non-ZFS, non-system filesystems |
 | Show ZFS pools | true | Group ZFS datasets by pool with expandable detail |
+| Group Btrfs subvolumes | true | Merge subvolumes of one Btrfs filesystem into a single expandable volume |
+| Merge mountpoints sharing a device | false | Collapse the remaining same-device mountpoints into one row with a `+N mounts` badge |
 | Show Nix info | true | Display cached store size plus current generation closure details |
 | Excluded mountpoints or datasets | [] | Mountpoints or ZFS datasets to hide; supports `*` wildcards such as `/run/user/1000/*` |
 
