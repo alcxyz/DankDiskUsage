@@ -9,6 +9,8 @@ A bar widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankM
 - Smart mount priority: system paths (/, /home, /nix, /var, /boot) are shown prominently in "System Storage"
 - Bar pill shows the most important mount's usage percentage
 - ZFS datasets grouped by pool with expandable detail views
+- Btrfs subvolumes of one filesystem grouped into a single expandable volume, so shared capacity is counted once instead of once per mountpoint
+- Optional same-device merging for the remaining filesystems (bind mounts, volumes mounted twice)
 - Nix store total size on demand, plus current NixOS generation path count and closure size
 - Color-coded usage bars with configurable warning/critical thresholds
 - Excludes tmpfs, devtmpfs, overlay, and fuse mounts automatically
@@ -44,6 +46,19 @@ For an identifiable development build, stage `dist/dev` first and copy
 
 The Nix section refreshes current generation closure details automatically. The full `/nix/store` size is cached and only rescanned when you click the Nix section refresh button, because walking the whole store can be expensive.
 
+`df` can report several Btrfs mountpoints with the same filesystem-wide usage.
+**Group Btrfs subvolumes** presents that capacity once and keeps the mountpoint list
+expandable. **Merge mountpoints sharing a device** optionally collapses other repeated
+device rows; GNU `df` already omits ordinary duplicate bind mounts in many cases.
+Grouping conservatively recognizes sources under `/dev/`; pseudo sources, ZFS datasets,
+network shares, and paths outside `/dev/` remain separate. See
+[ADR-006](docs/adr/ADR-006-device-aware-mount-grouping.md).
+
+**Show partitions** also controls Btrfs groups without system mounts. Groups containing
+priority mounts such as `/` or `/home` stay visible. Changes to grouping, visibility,
+and exclusions apply to the latest disk snapshot as soon as settings reload, without
+waiting for the next disk poll.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Refresh interval | 30s | How often to poll disk usage data |
@@ -51,6 +66,8 @@ The Nix section refreshes current generation closure details automatically. The 
 | Critical threshold | 95% | Usage percentage for red indicator |
 | Show partitions | true | Display non-ZFS, non-system filesystems |
 | Show ZFS pools | true | Group ZFS datasets by pool with expandable detail |
+| Group Btrfs subvolumes | true | Merge subvolumes of one Btrfs filesystem into a single expandable volume |
+| Merge mountpoints sharing a device | false | Collapse the remaining same-device mountpoints into one row with a `+N mounts` badge |
 | Show Nix info | true | Display cached store size plus current generation closure details |
 | Excluded mountpoints or datasets | [] | Mountpoints or ZFS datasets to hide; supports `*` wildcards such as `/run/user/1000/*` |
 

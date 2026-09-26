@@ -50,6 +50,20 @@ PluginSettings {
     }
 
     ToggleSetting {
+        settingKey: "showBtrfsVolumes"
+        label: "Group Btrfs subvolumes"
+        description: "Collapse subvolumes of one Btrfs filesystem into a single expandable volume instead of repeating its capacity per mountpoint"
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "dedupeByDevice"
+        label: "Merge mountpoints sharing a device"
+        description: "Show one row per block device for the remaining filesystems (bind mounts, volumes mounted twice); hidden mountpoints are counted in a badge"
+        defaultValue: false
+    }
+
+    ToggleSetting {
         settingKey: "showNixStore"
         label: "Show Nix info"
         description: "Display cached store size plus current generation closure details"
