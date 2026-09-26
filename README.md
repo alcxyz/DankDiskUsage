@@ -47,7 +47,9 @@ For an identifiable development build, stage `dist/dev` first and copy
 
 ## Settings
 
-The Nix section refreshes current generation closure details automatically. The full `/nix/store` size is cached and only rescanned when you click the Nix section refresh button, because walking the whole store can be expensive.
+By default, the Nix section refreshes current generation closure details automatically. The full `/nix/store` disk usage is cached and only rescanned when you click the Nix section refresh button.
+
+An optional [background collector](docs/collector.md) refreshes registered Nix object sizes on a user timer, including while the widget is closed. Enable **Use background collector** after installing and enabling the helper. Registered size is logical NAR metadata, separate from scanned disk usage; the widget only reads the cached snapshot in this mode.
 
 `df` can report several Btrfs mountpoints with the same filesystem-wide usage.
 **Group Btrfs subvolumes** presents that capacity once and keeps the mountpoint list
@@ -99,6 +101,7 @@ member mapping rules.
 | Show network shares | true | Show supported network mounts as independent rows |
 | Merge mountpoints sharing a device | false | Collapse the remaining same-device mountpoints into one row with a `+N mounts` badge |
 | Show Nix info | true | Display cached store size plus current generation closure details |
+| Use background collector | false | Read Nix metadata from the optional scheduled helper |
 | Excluded mountpoints or datasets | [] | Mountpoints or ZFS datasets to hide; supports `*` wildcards such as `/run/user/1000/*` |
 
 +## Development builds

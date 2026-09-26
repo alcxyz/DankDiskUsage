@@ -58,6 +58,10 @@
       "type": "boolean",
       "default": true
     },
+    "useCollector": {
+      "type": "boolean",
+      "default": false
+    },
     "excludeMounts": {
       "type": "array",
       "default": [],

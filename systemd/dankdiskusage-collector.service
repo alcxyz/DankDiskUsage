@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh DankDiskUsage storage snapshot
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/dankdiskusage-collector
+Environment=PATH=%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=120
+NoNewPrivileges=true

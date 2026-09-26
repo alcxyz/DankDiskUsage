@@ -1,3 +1,5 @@
 {
-  "pluginDirectory": "DankDiskUsage"
+  "pluginDirectory": "DankDiskUsage",
+  "helper": "dankdiskusage-collector",
+  "revisionVariable": true
 }
