@@ -21,6 +21,7 @@ PluginComponent {
     property bool showNetworkMounts: true
     property bool showExternalDrives: true
     property bool showNixStore: true
+    property bool useCollector: false
     property var excludeMounts: []
 
     // ── Mount priority (lower = more important) ─────────────────────
@@ -44,12 +45,17 @@ PluginComponent {
     property var mergerfsQueue: []
     property var mergerfsRequests: []
     property var nixStoreInfo: null
+    property var collectorSnapshot: null
+    property string collectorReadError: ""
+    property double collectorNow: Date.now()
     property bool isScanningNixStore: false
     property int primaryUsagePercent: 0
     property var expandedPools: ({})
 
     function loadSettings() {
         if (!pluginService || !pluginService.loadPluginData) return
+        var wasCollecting = root.showNixStore && root.useCollector
+        var wasShowingNixStore = root.showNixStore
         var previousMountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, showMergedStorage, showNetworkMounts, showExternalDrives, excludeMounts])
         refreshInterval = pluginService.loadPluginData("dankDiskUsage", "refreshInterval", 30) || 30
         warningThreshold = pluginService.loadPluginData("dankDiskUsage", "warningThreshold", 80) || 80
@@ -62,12 +68,20 @@ PluginComponent {
         showNetworkMounts = pluginService.loadPluginData("dankDiskUsage", "showNetworkMounts", true) !== false
         showExternalDrives = pluginService.loadPluginData("dankDiskUsage", "showExternalDrives", true) !== false
         showNixStore = pluginService.loadPluginData("dankDiskUsage", "showNixStore", true) !== false
+        useCollector = pluginService.loadPluginData("dankDiskUsage", "useCollector", false) === true
         var saved = pluginService.loadPluginData("dankDiskUsage", "excludeMounts", [])
         excludeMounts = root.normalizeExcludeMounts(saved)
         var mountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, showMergedStorage, showNetworkMounts, showExternalDrives, excludeMounts])
         if (lastDfOutput !== null && mountSettings !== previousMountSettings) {
             root.updateMounts(lastDfOutput)
             root.refreshMergerfsMetadata()
+        }
+        if (showNixStore && useCollector && !wasCollecting) {
+            root.collectorNow = Date.now()
+            collectorFile.reload()
+        } else if (showNixStore && !useCollector && (wasCollecting === true || wasShowingNixStore === false)
+                   && !nixPathCountProcess.running) {
+            nixPathCountProcess.running = true
         }
     }
 
@@ -106,7 +120,95 @@ PluginComponent {
     // ── Data refresh ────────────────────────────────────────────────
     function refreshAll() {
         if (!dfProcess.running) dfProcess.running = true
-        if (root.showNixStore && !nixPathCountProcess.running) nixPathCountProcess.running = true
+        root.collectorNow = Date.now()
+        if (root.showNixStore && root.useCollector) collectorFile.reload()
+        if (root.showNixStore && !root.useCollector && !nixPathCountProcess.running) nixPathCountProcess.running = true
+    }
+
+    readonly property string collectorCachePath: {
+        var cacheHome = Quickshell.env("XDG_CACHE_HOME")
+        if (!cacheHome || cacheHome.charAt(0) !== "/") {
+            var home = Quickshell.env("HOME")
+            cacheHome = home && home.charAt(0) === "/" ? home + "/.cache" : ""
+        }
+        return cacheHome ? cacheHome.replace(/\/$/, "") + "/dankDiskUsage/snapshot.json" : ""
+    }
+
+    property FileView collectorFile: FileView {
+        id: collectorFile
+        path: root.showNixStore && root.useCollector ? root.collectorCachePath : ""
+        watchChanges: true
+        onFileChanged: { if (root.showNixStore && root.useCollector) reload() }
+        onLoaded: { if (root.showNixStore && root.useCollector) root.acceptCollectorSnapshot(text()) }
+        onLoadFailed: {
+            if (root.showNixStore && root.useCollector)
+                root.collectorReadError = "Collector snapshot unavailable or unreadable"
+        }
+    }
+
+    function validCollectorMetric(metric, closure) {
+        if (!metric || typeof metric !== "object" || Array.isArray(metric)) return false
+        if (!Number.isSafeInteger(metric.paths) || metric.paths < 0) return false
+        if (!Number.isSafeInteger(metric.bytes) || metric.bytes < 0) return false
+        if (typeof metric.error !== "string" || typeof metric.updatedAt !== "string") return false
+        if (metric.checkedAt !== undefined && (typeof metric.checkedAt !== "string"
+                || (metric.checkedAt !== "" && (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(metric.checkedAt)
+                    || !Number.isFinite(Date.parse(metric.checkedAt)))))) return false
+        if (metric.updatedAt === "") {
+            if (!metric.error) return false
+        } else if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(metric.updatedAt)
+                   || !Number.isFinite(Date.parse(metric.updatedAt))) return false
+        if (closure && (typeof metric.target !== "string" || (metric.updatedAt && !metric.target))) return false
+        return true
+    }
+
+    function acceptCollectorSnapshot(contents) {
+        try {
+            var snapshot = JSON.parse(contents)
+            if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
+                    || snapshot.version !== 1 || !snapshot.nix || typeof snapshot.nix !== "object"
+                    || !root.validCollectorMetric(snapshot.nix.registered, false)
+                    || !root.validCollectorMetric(snapshot.nix.closure, true))
+                throw new Error("unsupported schema")
+            root.collectorSnapshot = snapshot
+            root.collectorReadError = ""
+            root.collectorNow = Date.now()
+        } catch (error) {
+            root.collectorReadError = "Invalid collector snapshot"
+        }
+    }
+
+    function collectorAge(metric) {
+        if (!metric || !metric.updatedAt) return ""
+        var minutes = Math.max(0, Math.floor((collectorNow - Date.parse(metric.updatedAt)) / 60000))
+        return minutes < 1 ? "just now" : minutes < 60 ? minutes + "m ago" : Math.floor(minutes / 60) + "h ago"
+    }
+
+    function collectorStatus(metric, checkStale) {
+        if (!metric) return "Waiting for collector snapshot"
+        var status = metric.updatedAt
+                   ? "Updated " + new Date(metric.updatedAt).toLocaleString() + " (" + root.collectorAge(metric) + ")"
+                   : "No successful measurement"
+        if (metric.checkedAt && metric.checkedAt !== metric.updatedAt)
+            status += " · checked " + new Date(metric.checkedAt).toLocaleString()
+        // A failed/deferred check cannot refresh a prior measurement; a successful
+        // check can confirm that an unchanged closure is still current.
+        var freshnessAt = metric.error ? metric.updatedAt : (metric.checkedAt || metric.updatedAt)
+        if (checkStale && freshnessAt && collectorNow - Date.parse(freshnessAt) > 45 * 60000)
+            status += " · stale"
+        if (metric.source === "nix-cli") status += metric.target !== undefined ? " · Nix CLI" : " · Nix CLI fallback"
+        else if (metric.source === "sqlite") status += " · SQLite"
+        if (metric.error) status += " · " + metric.error
+        return status
+    }
+
+    function formatCollectorBytes(bytes) {
+        if (!Number.isSafeInteger(bytes) || bytes < 0) return "?"
+        var units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+        var value = bytes
+        var index = 0
+        while (value >= 1024 && index < units.length - 1) { value /= 1024; index++ }
+        return (index === 0 ? String(value) : value.toFixed(value >= 10 ? 0 : 1)) + " " + units[index]
     }
 
     function scanNixStoreSize() {
@@ -1530,7 +1632,7 @@ PluginComponent {
             Column {
                 width: parent.width
                 spacing: Theme.spacingS
-                visible: root.showNixStore && root.nixStoreInfo !== null
+                visible: root.showNixStore
 
                 Item {
                     width: parent.width
@@ -1564,7 +1666,93 @@ PluginComponent {
 
                 StyledRect {
                     width: parent.width
-                    height: 104
+                    height: collectorDetails.implicitHeight + 2 * Theme.spacingS
+                    radius: Theme.cornerRadius
+                    color: Theme.surfaceContainerHigh
+                    visible: root.useCollector
+
+                    Column {
+                        id: collectorDetails
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Theme.spacingS
+                        spacing: Theme.spacingXS
+
+                        StyledText {
+                            width: parent.width
+                            text: "Registered Nix store · logical NAR metadata"
+                            font.pixelSize: Theme.fontSizeSmall
+                            font.weight: Font.Medium
+                            color: Theme.surfaceText
+                            wrapMode: Text.Wrap
+                        }
+
+                        StyledText {
+                            width: parent.width
+                            text: !root.collectorSnapshot ? "Waiting for collector snapshot"
+                                  : !root.collectorSnapshot.nix.registered.updatedAt ? "No registered store measurement"
+                                  : root.formatCollectorBytes(root.collectorSnapshot.nix.registered.bytes)
+                                    + " · " + root.collectorSnapshot.nix.registered.paths + " paths"
+                            font.pixelSize: Theme.fontSizeMedium
+                            font.weight: Font.Bold
+                            color: root.collectorSnapshot && root.collectorSnapshot.nix.registered.updatedAt ? Theme.primary : Theme.surfaceVariantText
+                            wrapMode: Text.Wrap
+                        }
+
+                        StyledText {
+                            width: parent.width
+                            text: root.collectorStatus(root.collectorSnapshot ? root.collectorSnapshot.nix.registered : null, true)
+                            textFormat: Text.PlainText
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: Theme.surfaceVariantText
+                            wrapMode: Text.Wrap
+                        }
+
+                        StyledText {
+                            width: parent.width
+                            text: "Current-system closure · logical NAR metadata"
+                            font.pixelSize: Theme.fontSizeSmall
+                            font.weight: Font.Medium
+                            color: Theme.surfaceText
+                            wrapMode: Text.Wrap
+                        }
+
+                        StyledText {
+                            width: parent.width
+                            text: !root.collectorSnapshot ? "Waiting for collector snapshot"
+                                  : !root.collectorSnapshot.nix.closure.updatedAt ? "No closure measurement"
+                                  : root.formatCollectorBytes(root.collectorSnapshot.nix.closure.bytes)
+                                    + " · " + root.collectorSnapshot.nix.closure.paths + " paths"
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: Theme.surfaceText
+                            wrapMode: Text.Wrap
+                        }
+
+                        StyledText {
+                            width: parent.width
+                            text: root.collectorStatus(root.collectorSnapshot ? root.collectorSnapshot.nix.closure : null, true)
+                            textFormat: Text.PlainText
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: Theme.surfaceVariantText
+                            wrapMode: Text.Wrap
+                        }
+
+                        StyledText {
+                            width: parent.width
+                            visible: root.collectorReadError !== ""
+                            text: root.collectorReadError + (root.collectorSnapshot ? " · showing last snapshot" : "")
+                            textFormat: Text.PlainText
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: Theme.surfaceVariantText
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                }
+
+                StyledRect {
+                    width: parent.width
+                    height: root.useCollector ? 44 : 104
                     radius: Theme.cornerRadius
                     color: Theme.surfaceContainerHigh
 
@@ -1578,7 +1766,7 @@ PluginComponent {
                             height: 26
 
                             StyledText {
-                                text: "Store total"
+                                text: "Store disk usage (manual scan)"
                                 font.pixelSize: Theme.fontSizeMedium
                                 font.weight: Font.Medium
                                 color: Theme.surfaceText
@@ -1608,6 +1796,7 @@ PluginComponent {
                         Item {
                             width: parent.width
                             height: 24
+                            visible: !root.useCollector
 
                             StyledText {
                                 text: "Current generation"
@@ -1637,6 +1826,7 @@ PluginComponent {
                         Item {
                             width: parent.width
                             height: 24
+                            visible: !root.useCollector
 
                             StyledText {
                                 text: "Current paths"
@@ -1679,7 +1869,7 @@ PluginComponent {
                          && root.externalMounts.length === 0
                          && root.networkMounts.length === 0
                          && root.otherMounts.length === 0
-                         && root.nixStoreInfo === null
+                         && !root.showNixStore
             }
         }
     }

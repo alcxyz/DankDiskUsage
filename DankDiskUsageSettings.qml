@@ -91,6 +91,13 @@ PluginSettings {
         defaultValue: true
     }
 
+    ToggleSetting {
+        settingKey: "useCollector"
+        label: "Use cached Nix collector"
+        description: "Read registered store and closure metadata from the collector cache; keep the manual disk scan available"
+        defaultValue: false
+    }
+
     ListSettingWithInput {
         settingKey: "excludeMounts"
         label: "Excluded mountpoints or datasets"
