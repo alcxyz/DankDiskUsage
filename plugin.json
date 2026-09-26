@@ -38,6 +38,14 @@
       "type": "boolean",
       "default": true
     },
+    "showMergedStorage": {
+      "type": "boolean",
+      "default": true
+    },
+    "showNetworkMounts": {
+      "type": "boolean",
+      "default": true
+    },
     "dedupeByDevice": {
       "type": "boolean",
       "default": false

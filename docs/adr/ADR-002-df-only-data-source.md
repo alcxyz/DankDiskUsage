@@ -24,3 +24,11 @@ Use a single `df` call as the sole data source. Derive ZFS pool groupings by par
 - Pool health status (ONLINE/DEGRADED) is no longer displayed. This is acceptable because health changes are rare and typically surfaced through other monitoring.
 - One fewer subprocess per refresh cycle.
 - Fuse mounts are excluded via `-x fuse` in the df command to avoid duplicating ZFS datasets that have fuse bind mounts.
+
+## Amendment: mergerfs and network mount metadata (2026-09-26)
+
+[ADR-007](ADR-007-merged-and-network-storage.md) adds narrowly scoped mount
+classification and optional `user.mergerfs.branches` metadata. `df` remains the
+source of capacity and usage: mergerfs member details use the `df` rows for the
+member filesystems, and network mounts remain independent `df` rows. Attribute
+lookup only discovers mergerfs branch paths; it does not calculate usage.
