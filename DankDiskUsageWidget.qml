@@ -19,6 +19,7 @@ PluginComponent {
     property bool dedupeByDevice: false
     property bool showMergedStorage: true
     property bool showNetworkMounts: true
+    property bool showExternalDrives: true
     property bool showNixStore: true
     property var excludeMounts: []
 
@@ -37,6 +38,8 @@ PluginComponent {
     property var otherMounts: []
     property var mergerfsGroups: []
     property var networkMounts: []
+    property var externalMounts: []
+    property var externalDevices: ({})
     property var mergerfsMetadata: ({})
     property var mergerfsQueue: []
     property var mergerfsRequests: []
@@ -47,7 +50,7 @@ PluginComponent {
 
     function loadSettings() {
         if (!pluginService || !pluginService.loadPluginData) return
-        var previousMountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, showMergedStorage, showNetworkMounts, excludeMounts])
+        var previousMountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, showMergedStorage, showNetworkMounts, showExternalDrives, excludeMounts])
         refreshInterval = pluginService.loadPluginData("dankDiskUsage", "refreshInterval", 30) || 30
         warningThreshold = pluginService.loadPluginData("dankDiskUsage", "warningThreshold", 80) || 80
         criticalThreshold = pluginService.loadPluginData("dankDiskUsage", "criticalThreshold", 95) || 95
@@ -57,10 +60,11 @@ PluginComponent {
         dedupeByDevice = pluginService.loadPluginData("dankDiskUsage", "dedupeByDevice", false) === true
         showMergedStorage = pluginService.loadPluginData("dankDiskUsage", "showMergedStorage", true) !== false
         showNetworkMounts = pluginService.loadPluginData("dankDiskUsage", "showNetworkMounts", true) !== false
+        showExternalDrives = pluginService.loadPluginData("dankDiskUsage", "showExternalDrives", true) !== false
         showNixStore = pluginService.loadPluginData("dankDiskUsage", "showNixStore", true) !== false
         var saved = pluginService.loadPluginData("dankDiskUsage", "excludeMounts", [])
         excludeMounts = root.normalizeExcludeMounts(saved)
-        var mountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, showMergedStorage, showNetworkMounts, excludeMounts])
+        var mountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, showMergedStorage, showNetworkMounts, showExternalDrives, excludeMounts])
         if (lastDfOutput !== null && mountSettings !== previousMountSettings) {
             root.updateMounts(lastDfOutput)
             root.refreshMergerfsMetadata()
@@ -121,8 +125,53 @@ PluginComponent {
                 root.lastDfOutput = text
                 root.updateMounts(text)
                 root.refreshMergerfsMetadata()
+                if (!root.blockDeviceProcess.running) root.blockDeviceProcess.running = true
             }
         }
+    }
+
+    // Read device transport/removability, not filesystem contents or identities.
+    property Process blockDeviceProcess: Process {
+        command: ["sh", "-c", "exec timeout -k 1s 3s lsblk --json --paths --tree --output NAME,KNAME,PATH,TRAN,RM 2>/dev/null"]
+        stdout: StdioCollector { id: blockDeviceOutput }
+        onExited: (exitCode, exitStatus) => root.acceptDeviceMetadata(exitCode === 0 ? blockDeviceOutput.text : "")
+    }
+
+    function acceptDeviceMetadata(text) {
+        // Replace the snapshot even on failure: never keep stale USB classifications.
+        externalDevices = root.parseExternalDevices(text)
+        if (lastDfOutput !== null) root.updateMounts(lastDfOutput)
+    }
+
+    function parseExternalDevices(text) {
+        var data
+        try { data = JSON.parse(text) } catch (error) { return {} }
+        if (!data || !Array.isArray(data.blockdevices)) return {}
+        var devices = {}
+        function visit(nodes, inheritedConnection) {
+            for (var i = 0; i < nodes.length; i++) {
+                var node = nodes[i]
+                if (!node || typeof node !== "object") continue
+                var removable = node.rm === true || node.rm === 1 || node.rm === "1" || node.rm === "true"
+                var connection = node.tran === "usb" || inheritedConnection === "USB" ? "USB"
+                               : removable || inheritedConnection ? "Removable" : ""
+                if (connection) {
+                    var aliases = [node.name, node.kname, node.path]
+                    for (var a = 0; a < aliases.length; a++) {
+                        var alias = aliases[a]
+                        if (typeof alias !== "string" || alias.indexOf("/dev/") !== 0) continue
+                        if (devices[alias] !== "USB") devices[alias] = connection
+                    }
+                }
+                if (Array.isArray(node.children)) visit(node.children, connection)
+            }
+        }
+        visit(data.blockdevices, "")
+        return devices
+    }
+
+    function externalConnection(device) {
+        return (root.externalDevices || {})[device] || ""
     }
 
     // Optional topology enrichment. No mount options, file scans or privilege escalation.
@@ -218,6 +267,7 @@ PluginComponent {
         var important = []
         var pools = {}
         var other = []
+        var external = []
 
         // Mergerfs topology must see physical rows before optional device deduplication.
         var requests = []
@@ -249,8 +299,18 @@ PluginComponent {
         var visibleVolumes = []
         for (var v = 0; v < volumes.groups.length; v++) {
             var volume = volumes.groups[v]
-            // System mounts remain visible even when ordinary partitions are hidden.
-            if (root.showPartitions || volume.priority < 100) visibleVolumes.push(volume)
+            // System groups keep their established placement, even on USB media.
+            var connection = root.externalConnection(volume.device)
+            if (connection && volume.priority >= 100) {
+                if (root.showExternalDrives) {
+                    volume.mount = volume.poolName
+                    volume.fstype = "btrfs"
+                    volume.connection = connection
+                    external.push(volume)
+                }
+            } else if (root.showPartitions || volume.priority < 100) {
+                visibleVolumes.push(volume)
+            }
         }
         root.btrfsVolumeGroups = visibleVolumes
 
@@ -260,6 +320,11 @@ PluginComponent {
             if (prio !== undefined) {
                 entry.priority = prio
                 important.push(entry)
+            } else if (root.externalConnection(entry.device)) {
+                if (root.showExternalDrives) {
+                    entry.connection = root.externalConnection(entry.device)
+                    external.push(entry)
+                }
             } else if (entry.fstype === "zfs" && root.showZfs) {
                 var poolName = entry.device.indexOf("/") > 0
                     ? entry.device.substring(0, entry.device.indexOf("/"))
@@ -285,6 +350,8 @@ PluginComponent {
         root.zfsPoolGroups = poolList
 
         root.otherMounts = other
+        external.sort(function(a, b) { return a.mount.localeCompare(b.mount) })
+        root.externalMounts = external
         root.updatePrimaryUsage()
         root.isLoading = false
     }
@@ -658,6 +725,9 @@ PluginComponent {
         }
         for (var n = 0; n < networkMounts.length; n++) {
             if (networkMounts[n].percent > worst) worst = networkMounts[n].percent
+        }
+        for (var e = 0; e < externalMounts.length; e++) {
+            if (externalMounts[e].percent > worst) worst = externalMounts[e].percent
         }
         primaryUsagePercent = worst
     }
@@ -1312,6 +1382,85 @@ PluginComponent {
                 }
             }
 
+            // ── External drives ─────────────────────────────────────
+            Column {
+                width: parent.width
+                spacing: Theme.spacingS
+                visible: root.externalMounts.length > 0
+
+                StyledText {
+                    text: "External Drives"
+                    font.pixelSize: Theme.fontSizeMedium
+                    font.weight: Font.Medium
+                    color: Theme.surfaceVariantText
+                }
+
+                Repeater {
+                    model: root.externalMounts
+
+                    Column {
+                        width: parent.width
+                        spacing: Theme.spacingXS
+                        readonly property bool hasDatasets: !!modelData.datasets && modelData.datasets.length > 0
+                        readonly property string expansionKey: "external:" + modelData.device
+
+                        Item {
+                            width: parent.width
+                            height: externalCard.height
+
+                            StorageUsageCard {
+                                id: externalCard
+                                width: parent.width
+                                entry: modelData
+                                title: modelData.mount
+                                subtitle: modelData.fstype + " · " + modelData.connection + " · " + modelData.device
+                                          + (root.sharedMountLabel(modelData) ? " · " + root.sharedMountLabel(modelData) : "")
+                                usageTint: root.usageColor(modelData.percent)
+                                expandable: hasDatasets
+                                expanded: hasDatasets && !!root.expandedPools[expansionKey]
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                visible: hasDatasets
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.togglePool(expansionKey)
+                            }
+                        }
+
+                        Column {
+                            width: parent.width
+                            spacing: Theme.spacingXS
+                            visible: hasDatasets && !!root.expandedPools[expansionKey]
+
+                            Repeater {
+                                model: hasDatasets ? modelData.datasets : []
+
+                                StyledRect {
+                                    width: parent.width
+                                    height: 28
+                                    radius: Theme.cornerRadius
+                                    color: Theme.surfaceContainer
+
+                                    StyledText {
+                                        text: modelData.mount
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        color: Theme.surfaceText
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: Theme.spacingL
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: Theme.spacingS
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        elide: Text.ElideMiddle
+                                        maximumLineCount: 1
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // ── Network shares ──────────────────────────────────────
             Column {
                 width: parent.width
@@ -1344,14 +1493,14 @@ PluginComponent {
                 }
             }
 
-            // ── Other filesystems ───────────────────────────────────
+            // ── Local filesystems ───────────────────────────────────
             Column {
                 width: parent.width
                 spacing: Theme.spacingS
-                visible: root.showPartitions && root.otherMounts.length > 0
+                visible: root.otherMounts.length > 0
 
                 StyledText {
-                    text: "Other"
+                    text: "Local Filesystems"
                     font.pixelSize: Theme.fontSizeMedium
                     font.weight: Font.Medium
                     color: Theme.surfaceVariantText
@@ -1360,83 +1509,18 @@ PluginComponent {
                 Repeater {
                     model: root.otherMounts
 
-                    StyledRect {
+                    Item {
                         width: parent.width
-                        height: 56
-                        radius: Theme.cornerRadius
-                        color: Theme.surfaceContainerHigh
+                        height: localCard.height
 
-                        Column {
-                            anchors.fill: parent
-                            anchors.margins: Theme.spacingS
-                            spacing: Theme.spacingXS
-
-                            Item {
-                                width: parent.width
-                                height: otherMountText.implicitHeight
-
-                                StyledText {
-                                    id: otherMountText
-                                    text: modelData.mount
-                                    font.pixelSize: Theme.fontSizeMedium
-                                    font.weight: Font.Medium
-                                    color: Theme.surfaceText
-                                    elide: Text.ElideMiddle
-                                    anchors.left: parent.left
-                                    anchors.right: otherSharedBadge.left
-                                    anchors.rightMargin: otherSharedBadge.visible ? Theme.spacingXS : 0
-                                    anchors.verticalCenter: parent.verticalCenter
-                                }
-
-                                StyledText {
-                                    id: otherSharedBadge
-                                    text: root.sharedMountLabel(modelData)
-                                    visible: text.length > 0
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    color: Theme.surfaceVariantText
-                                    anchors.right: otherUsedText.left
-                                    anchors.rightMargin: Theme.spacingS
-                                    anchors.verticalCenter: parent.verticalCenter
-                                }
-
-                                StyledText {
-                                    id: otherUsedText
-                                    text: modelData.used + " / " + modelData.size
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    color: Theme.surfaceVariantText
-                                    anchors.right: otherPercentText.left
-                                    anchors.rightMargin: Theme.spacingS
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    elide: Text.ElideRight
-                                    maximumLineCount: 1
-                                }
-
-                                StyledText {
-                                    id: otherPercentText
-                                    text: modelData.percent + "%"
-                                    font.pixelSize: Theme.fontSizeMedium
-                                    font.weight: Font.Bold
-                                    color: root.usageColor(modelData.percent)
-                                    anchors.right: parent.right
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    elide: Text.ElideRight
-                                    maximumLineCount: 1
-                                }
-                            }
-
-                            Rectangle {
-                                width: parent.width
-                                height: 4
-                                radius: 2
-                                color: Theme.withAlpha(Theme.surfaceText, 0.1)
-
-                                Rectangle {
-                                    width: parent.width * (modelData.percent / 100)
-                                    height: parent.height
-                                    radius: 2
-                                    color: root.usageColor(modelData.percent)
-                                }
-                            }
+                        StorageUsageCard {
+                            id: localCard
+                            width: parent.width
+                            entry: modelData
+                            title: modelData.mount
+                            subtitle: modelData.fstype + " · " + modelData.device
+                                      + (root.sharedMountLabel(modelData) ? " · " + root.sharedMountLabel(modelData) : "")
+                            usageTint: root.usageColor(modelData.percent)
                         }
                     }
                 }
@@ -1592,6 +1676,7 @@ PluginComponent {
                          && root.zfsPoolGroups.length === 0
                          && root.btrfsVolumeGroups.length === 0
                          && root.mergerfsGroups.length === 0
+                         && root.externalMounts.length === 0
                          && root.networkMounts.length === 0
                          && root.otherMounts.length === 0
                          && root.nixStoreInfo === null

@@ -32,3 +32,9 @@ classification and optional `user.mergerfs.branches` metadata. `df` remains the
 source of capacity and usage: mergerfs member details use the `df` rows for the
 member filesystems, and network mounts remain independent `df` rows. Attribute
 lookup only discovers mergerfs branch paths; it does not calculate usage.
+
+## Amendment: external-drive metadata (2026-09-26)
+
+[ADR-008](ADR-008-external-drive-classification.md) adds optional `lsblk` metadata
+for classifying external block devices. `df` remains the source of capacity and
+usage; `lsblk` only supplies device identity, transport, and removable status.

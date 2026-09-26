@@ -19,6 +19,7 @@ function widget(settings = {}) {
         showBtrfsVolumes: true,
         showMergedStorage: true,
         showNetworkMounts: true,
+        showExternalDrives: true,
         dedupeByDevice: false,
         excludeMounts: [],
         importantMounts: [],
@@ -26,6 +27,8 @@ function widget(settings = {}) {
         btrfsVolumeGroups: [],
         mergerfsGroups: [],
         networkMounts: [],
+        externalMounts: [],
+        externalDevices: {},
         mergerfsMetadata: {},
         mergerfsRequests: [],
         mergerfsQueue: [],
@@ -49,7 +52,8 @@ function widget(settings = {}) {
     }
     for (const name of ['updateMounts', 'loadSettings', 'groupBtrfsVolumes', 'dedupeSameDevice',
         'updatePrimaryUsage', 'groupMergerfs', 'networkProtocol', 'parseMergerfsBranches',
-        'acceptMergerfsMetadata']) {
+        'acceptMergerfsMetadata', 'parseExternalDevices', 'acceptDeviceMetadata',
+        'externalConnection']) {
         assert.equal(typeof root[name], 'function', `${name} must be an extractable top-level QML function`);
     }
     root.loadSettings();
@@ -75,6 +79,10 @@ const btrfs = [
 
 function mounts(entries) {
     return Array.from(entries, entry => entry.mount);
+}
+
+function lsblk(blockdevices) {
+    return JSON.stringify({ blockdevices });
 }
 
 for (const grouped of [false, true]) {
@@ -520,4 +528,169 @@ test('unexcluding a pool starts metadata discovery without waiting for df', () =
     assert.equal(root.mergerfsGroups[0].detailsLoading, true);
     assert.equal(root.mergerfsProcess.running, true);
     assert.equal(root.mergerfsProcess.mountPoint, '/pool');
+});
+
+test('lsblk classifies USB and removable descendants through all device aliases', () => {
+    const root = widget();
+    const metadata = lsblk([
+        { name: '/dev/sda', kname: '/dev/sda', path: '/dev/sda', tran: 'usb', rm: false,
+            children: [{ name: '/dev/sda1', kname: '/dev/sda1', path: '/dev/sda1', rm: 0,
+                children: [{ name: '/dev/mapper/vault', kname: '/dev/dm-0',
+                    path: '/dev/mapper/vault', rm: false }] }] },
+        { name: '/dev/sdb', tran: 'sata', rm: 1,
+            children: [{ name: '/dev/sdb1', rm: 0 }] },
+        { name: '/dev/sdc', tran: 'sata', rm: '1' },
+        { name: '/dev/sdd', tran: 'sata', rm: true },
+        { name: '/dev/sde', tran: 'sata', rm: 'true' },
+        { name: '/dev/sdf', tran: 'sata', rm: false, hotplug: true },
+    ]);
+    const devices = root.parseExternalDevices(metadata);
+    for (const alias of ['/dev/sda', '/dev/sda1', '/dev/mapper/vault', '/dev/dm-0'])
+        assert.equal(devices[alias], 'USB', alias);
+    for (const alias of ['/dev/sdb', '/dev/sdb1', '/dev/sdc', '/dev/sdd', '/dev/sde'])
+        assert.equal(devices[alias], 'Removable', alias);
+    assert.equal(devices['/dev/sdf'], undefined, 'hotplug alone must stay local');
+    assert.equal(root.externalConnection('/dev/dm-0'), '', 'parsing alone must not install metadata');
+    root.acceptDeviceMetadata(metadata);
+    assert.equal(root.externalConnection('/dev/dm-0'), 'USB');
+    assert.equal(root.externalConnection('/dev/mapper/vault'), 'USB');
+});
+
+test('metadata arrival, removal, and changed replug classify cached df without stale devices', () => {
+    const root = widget();
+    root.acceptDf([
+        row('/dev/mapper/vault', 'ext4', 71, '/media/vault'),
+        row('/dev/sdb1', 'ext4', 42, '/media/card'),
+    ].join('\n'));
+    assert.deepEqual(mounts(root.otherMounts), ['/media/vault', '/media/card']);
+    root.acceptDeviceMetadata(lsblk([
+        { name: '/dev/sda', tran: 'usb', rm: false,
+            children: [{ name: '/dev/mapper/vault', kname: '/dev/dm-0', path: '/dev/mapper/vault' }] },
+    ]));
+    assert.deepEqual(mounts(root.externalMounts), ['/media/vault']);
+    assert.deepEqual(mounts(root.otherMounts), ['/media/card']);
+    root.acceptDeviceMetadata('{bad json');
+    assert.deepEqual(Object.keys(root.externalDevices), []);
+    assert.deepEqual(mounts(root.externalMounts), []);
+    assert.deepEqual(mounts(root.otherMounts), ['/media/vault', '/media/card']);
+    root.acceptDeviceMetadata(lsblk([{ name: '/dev/sdb', tran: 'sata', rm: '1',
+        children: [{ name: '/dev/sdb1' }] }]));
+    assert.deepEqual(mounts(root.externalMounts), ['/media/card']);
+    assert.equal(root.externalMounts[0].connection, 'Removable');
+    assert.equal(root.externalConnection('/dev/mapper/vault'), '');
+});
+
+test('external visibility is independent of local partitions and cached setting changes', () => {
+    const settings = { showPartitions: false, showExternalDrives: true };
+    const root = widget(settings);
+    root.acceptDf([
+        row('/dev/system', 'ext4', 15, '/'),
+        row('/dev/internal', 'ext4', 41, '/media/local'),
+        row('/dev/usb1', 'ext4', 73, '/media/usb'),
+    ].join('\n'));
+    root.acceptDeviceMetadata(lsblk([{ name: '/dev/usb', tran: 'usb', rm: 0,
+        children: [{ name: '/dev/usb1' }] }]));
+    assert.deepEqual(mounts(root.importantMounts), ['/']);
+    assert.deepEqual(mounts(root.otherMounts), []);
+    assert.deepEqual(mounts(root.externalMounts), ['/media/usb']);
+    assert.equal(root.primaryUsagePercent, 15);
+    settings.showExternalDrives = false;
+    root.loadSettings();
+    assert.deepEqual(mounts(root.externalMounts), []);
+    assert.deepEqual(mounts(root.otherMounts), []);
+    settings.showPartitions = true;
+    root.loadSettings();
+    assert.deepEqual(mounts(root.otherMounts), ['/media/local']);
+    assert.deepEqual(mounts(root.externalMounts), []);
+    settings.showExternalDrives = true;
+    root.loadSettings();
+    assert.deepEqual(mounts(root.externalMounts), ['/media/usb']);
+});
+
+test('USB system root keeps priority and pill even with external drives hidden', () => {
+    const settings = { showExternalDrives: false, showPartitions: false };
+    const root = widget(settings);
+    root.acceptDf([
+        row('/dev/usb1', 'ext4', 33, '/'),
+        row('/dev/usb2', 'vfat', 94, '/boot'),
+        row('/dev/usb3', 'ext4', 88, '/media/extra'),
+    ].join('\n'));
+    root.acceptDeviceMetadata(lsblk([{ name: '/dev/usb', tran: 'usb', rm: false,
+        children: [{ name: '/dev/usb1' }, { name: '/dev/usb2' }, { name: '/dev/usb3' }] }]));
+    assert.deepEqual(mounts(root.importantMounts), ['/', '/boot']);
+    assert.equal(root.primaryUsagePercent, 33);
+    assert.deepEqual(mounts(root.externalMounts), []);
+    settings.showExternalDrives = true;
+    root.loadSettings();
+    assert.deepEqual(mounts(root.externalMounts), ['/media/extra']);
+    assert.equal(root.primaryUsagePercent, 33);
+});
+
+test('USB Btrfs subvolumes form one expandable external group under every local grouping flag', () => {
+    const metadata = lsblk([{ name: '/dev/usb', tran: 'usb', rm: false,
+        children: [{ name: '/dev/usb1' }] }]);
+    const data = [
+        row('/dev/usb1', 'btrfs', 67, '/media/archive'),
+        row('/dev/usb1', 'btrfs', 67, '/media/archive/photos'),
+        row('/dev/usb1', 'btrfs', 67, '/media/archive/videos'),
+    ].join('\n');
+    for (const showPartitions of [false, true]) {
+        for (const dedupeByDevice of [false, true]) {
+            const root = widget({ showPartitions, dedupeByDevice, showBtrfsVolumes: true });
+            root.acceptDf(data);
+            root.acceptDeviceMetadata(metadata);
+            assert.equal(root.externalMounts.length, 1);
+            const group = root.externalMounts[0];
+            assert.equal(group.device, '/dev/usb1');
+            assert.equal(group.connection, 'USB');
+            assert.equal(group.percent, 67);
+            assert.deepEqual(mounts(group.datasets),
+                ['/media/archive', '/media/archive/photos', '/media/archive/videos']);
+            assert.equal(root.btrfsVolumeGroups.length, 0);
+            assert.equal(root.otherMounts.length, 0);
+            assert.equal(root.primaryUsagePercent, 67);
+        }
+    }
+});
+
+test('priority USB Btrfs group remains a system group under both visibility toggles', () => {
+    for (const showPartitions of [false, true]) {
+        const root = widget({ showPartitions, showExternalDrives: false });
+        root.acceptDf([
+            row('/dev/usb1', 'btrfs', 28, '/'),
+            row('/dev/usb1', 'btrfs', 28, '/home'),
+            row('/dev/usb1', 'btrfs', 28, '/var/log'),
+        ].join('\n'));
+        root.acceptDeviceMetadata(lsblk([{ name: '/dev/usb1', tran: 'usb', rm: false }]));
+        assert.equal(root.btrfsVolumeGroups.length, 1);
+        assert.deepEqual(mounts(root.btrfsVolumeGroups[0].datasets), ['/', '/home', '/var/log']);
+        assert.equal(root.externalMounts.length, 0);
+        assert.equal(root.primaryUsagePercent, 28);
+    }
+});
+
+test('mergerfs owns USB branch before external classification', () => {
+    const root = widget();
+    root.mergerfsMetadata = poolMetadata();
+    root.acceptDf(mergedRows);
+    root.acceptDeviceMetadata(lsblk([{ name: '/dev/disk-a', tran: 'usb', rm: false }]));
+    assert.deepEqual(mounts(root.mergerfsGroups[0].members), ['/mnt/disk-a', '/mnt/disk-b']);
+    assert.deepEqual(mounts(root.externalMounts), []);
+    assert.equal(root.primaryUsagePercent, 21);
+});
+
+test('network protocol ownership excludes a source resembling an external device', () => {
+    const root = widget();
+    root.acceptDf(row('/dev/usb1', 'nfs4', 81, '/remote'));
+    root.acceptDeviceMetadata(lsblk([{ name: '/dev/usb1', tran: 'usb', rm: false }]));
+    assert.deepEqual(mounts(root.networkMounts), ['/remote']);
+    assert.equal(root.externalMounts.length, 0);
+});
+
+test('without system mounts, external storage participates in worst usage fallback', () => {
+    const root = widget({ showPartitions: false });
+    root.acceptDf(row('/dev/usb1', 'ext4', 84, '/media/usb'));
+    root.acceptDeviceMetadata(lsblk([{ name: '/dev/usb1', tran: 'usb', rm: false }]));
+    assert.deepEqual(mounts(root.externalMounts), ['/media/usb']);
+    assert.equal(root.primaryUsagePercent, 84);
 });

@@ -30,6 +30,10 @@
       "type": "boolean",
       "default": true
     },
+    "showExternalDrives": {
+      "type": "boolean",
+      "default": true
+    },
     "showZfs": {
       "type": "boolean",
       "default": true

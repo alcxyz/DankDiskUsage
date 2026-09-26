@@ -37,8 +37,15 @@ PluginSettings {
 
     ToggleSetting {
         settingKey: "showPartitions"
-        label: "Show partitions"
-        description: "Display standard filesystem partitions (ext4, btrfs, xfs, etc.)"
+        label: "Show local filesystems"
+        description: "Display remaining internal local filesystems and non-system Btrfs volumes"
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "showExternalDrives"
+        label: "Show external drives"
+        description: "Display USB and removable drives separately from local filesystems"
         defaultValue: true
     }
 
