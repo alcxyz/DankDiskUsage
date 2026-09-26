@@ -9,3 +9,4 @@
 | [ADR-005](ADR-005-packaged-build-identity.md) | Packaged build identity | packaging |
 | [ADR-006](ADR-006-device-aware-mount-grouping.md) | Device-aware mount grouping | data model |
 | [ADR-007](ADR-007-merged-and-network-storage.md) | Merged and network storage | data model, data collection |
+| [ADR-008](ADR-008-external-drive-classification.md) | Optional external-drive classification | data model, data collection |
