@@ -1,11 +1,24 @@
-{ lib, buildGoModule, python3, makeWrapper, sqlite
+{ lib, buildGoModule, stdenv, stdenvNoCC, python3, makeWrapper, sqlite
 , version ? (builtins.fromJSON (builtins.readFile ./plugin.json)).version
-, revision ? null, release ? false }:
+, revision ? null, release ? false, withCollector ? true }:
 let
   metadata = import ./build-metadata.nix { inherit lib version revision release; };
 in
-buildGoModule {
-  pname = "dankdiskusage";
+if !withCollector then stdenvNoCC.mkDerivation {
+  pname = lib.toLower metadata.config.pluginDirectory;
+  version = metadata.version;
+  src = metadata.source;
+  nativeBuildInputs = [ python3 ];
+  dontBuild = true;
+  installPhase = ''
+    runHook preInstall
+    python3 scripts/package.py --stage-only --output "$out" \
+      --revision ${lib.escapeShellArg metadata.revision} ${lib.optionalString release "--release"}
+    runHook postInstall
+  '';
+}
+else buildGoModule {
+  pname = lib.toLower metadata.config.pluginDirectory;
   version = metadata.version;
   src = metadata.source;
   vendorHash = null;
@@ -20,7 +33,9 @@ buildGoModule {
     install -Dm644 systemd/dankdiskusage-collector.service "$out/lib/systemd/user/dankdiskusage-collector.service"
     substituteInPlace "$out/lib/systemd/user/dankdiskusage-collector.service" \
       --replace-fail '%h/.local/bin/dankdiskusage-collector' "$out/bin/dankdiskusage-collector"
-    test "$($out/bin/dankdiskusage-collector version)" = ${lib.escapeShellArg metadata.version}
+    ${lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
+      test "$($out/bin/dankdiskusage-collector version)" = ${lib.escapeShellArg metadata.version}
+    ''}
   '';
   meta = with lib; {
     description = "Disk usage widget and optional cached storage collector for DankMaterialShell";

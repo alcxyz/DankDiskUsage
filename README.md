@@ -49,7 +49,7 @@ For an identifiable development build, stage `dist/dev` first and copy
 
 By default, the Nix section refreshes current generation closure details automatically. The full `/nix/store` disk usage is cached and only rescanned when you click the Nix section refresh button.
 
-An optional [background collector](docs/collector.md) refreshes registered Nix object sizes on a user timer, including while the widget is closed. Enable **Use background collector** after installing and enabling the helper. Registered size is logical NAR metadata, separate from scanned disk usage; the widget only reads the cached snapshot in this mode.
+An optional [background collector](docs/collector.md) refreshes registered Nix object sizes on a user timer, independently of the DMS session. Enable **Use cached Nix collector** after installing and enabling the helper. Registered size is logical NAR metadata, separate from scanned disk usage; the widget only reads the cached snapshot in this mode.
 
 `df` can report several Btrfs mountpoints with the same filesystem-wide usage.
 **Group Btrfs subvolumes** presents that capacity once and keeps the mountpoint list
@@ -101,20 +101,24 @@ member mapping rules.
 | Show network shares | true | Show supported network mounts as independent rows |
 | Merge mountpoints sharing a device | false | Collapse the remaining same-device mountpoints into one row with a `+N mounts` badge |
 | Show Nix info | true | Display cached store size plus current generation closure details |
-| Use background collector | false | Read Nix metadata from the optional scheduled helper |
+| Use cached Nix collector | false | Read Nix metadata from the optional scheduled helper |
 | Excluded mountpoints or datasets | [] | Mountpoints or ZFS datasets to hide; supports `*` wildcards such as `/run/user/1000/*` |
 
-+## Development builds
+## Development builds
 
 The tracked manifest keeps the release version. To stage an identifiable
 development package, run:
 
 ```bash
-python3 scripts/package.py --output dist/dev
+# QML-only staging needs Python, without Go:
+python3 scripts/package.py --stage-only --output dist/dev
+# To include the optional helper, use Go 1.23+ and a separate output:
+python3 scripts/package.py --output dist/with-collector
 ```
 
 This produces a manifest version like `X.Y.Z-dev.<commit>`; a dirty checkout
 adds `.dirty`. For Nix, use `pkgs.callPackage ./default.nix { revision = ...; }`.
+Use `withCollector = false;` for a QML-only Nix package that does not build Go or install units.
 Release packaging is guarded and requires a clean checkout at the exact
 `vX.Y.Z` tag.
 

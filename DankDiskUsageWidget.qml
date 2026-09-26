@@ -54,6 +54,8 @@ PluginComponent {
 
     function loadSettings() {
         if (!pluginService || !pluginService.loadPluginData) return
+        var wasCollecting = root.showNixStore && root.useCollector
+        var wasShowingNixStore = root.showNixStore
         var previousMountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, showMergedStorage, showNetworkMounts, showExternalDrives, excludeMounts])
         refreshInterval = pluginService.loadPluginData("dankDiskUsage", "refreshInterval", 30) || 30
         warningThreshold = pluginService.loadPluginData("dankDiskUsage", "warningThreshold", 80) || 80
@@ -73,6 +75,13 @@ PluginComponent {
         if (lastDfOutput !== null && mountSettings !== previousMountSettings) {
             root.updateMounts(lastDfOutput)
             root.refreshMergerfsMetadata()
+        }
+        if (showNixStore && useCollector && !wasCollecting) {
+            root.collectorNow = Date.now()
+            collectorFile.reload()
+        } else if (showNixStore && !useCollector && (wasCollecting === true || wasShowingNixStore === false)
+                   && !nixPathCountProcess.running) {
+            nixPathCountProcess.running = true
         }
     }
 
@@ -129,9 +138,12 @@ PluginComponent {
         id: collectorFile
         path: root.showNixStore && root.useCollector ? root.collectorCachePath : ""
         watchChanges: true
-        onFileChanged: reload()
-        onLoaded: root.acceptCollectorSnapshot(text())
-        onLoadFailed: root.collectorReadError = "Collector snapshot unavailable or unreadable"
+        onFileChanged: { if (root.showNixStore && root.useCollector) reload() }
+        onLoaded: { if (root.showNixStore && root.useCollector) root.acceptCollectorSnapshot(text()) }
+        onLoadFailed: {
+            if (root.showNixStore && root.useCollector)
+                root.collectorReadError = "Collector snapshot unavailable or unreadable"
+        }
     }
 
     function validCollectorMetric(metric, closure) {
@@ -179,9 +191,13 @@ PluginComponent {
                    : "No successful measurement"
         if (metric.checkedAt && metric.checkedAt !== metric.updatedAt)
             status += " · checked " + new Date(metric.checkedAt).toLocaleString()
-        var checkedAt = metric.checkedAt || metric.updatedAt
-        if (checkStale && checkedAt && collectorNow - Date.parse(checkedAt) > 45 * 60000)
+        // A failed/deferred check cannot refresh a prior measurement; a successful
+        // check can confirm that an unchanged closure is still current.
+        var freshnessAt = metric.error ? metric.updatedAt : (metric.checkedAt || metric.updatedAt)
+        if (checkStale && freshnessAt && collectorNow - Date.parse(freshnessAt) > 45 * 60000)
             status += " · stale"
+        if (metric.source === "nix-cli") status += metric.target !== undefined ? " · Nix CLI" : " · Nix CLI fallback"
+        else if (metric.source === "sqlite") status += " · SQLite"
         if (metric.error) status += " · " + metric.error
         return status
     }

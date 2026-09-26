@@ -24,8 +24,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "unexpected arguments")
 		os.Exit(2)
 	}
-	if err := collector.Refresh(collector.Options{Output: *output, Database: *database, System: *system}); err != nil {
-		fmt.Fprintln(os.Stderr, "collector failed:", err)
+	if err := collector.Refresh(collector.Options{Output: *output, Database: *database, System: *system, Version: version, Diagnostics: os.Stderr}); err != nil {
+		fmt.Fprintln(os.Stderr, "collector failed; snapshot not updated")
 		os.Exit(1)
 	}
 }

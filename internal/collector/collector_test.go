@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -100,6 +101,17 @@ esac`)
 	if got.Nix.Closure.Error == "" || got.Nix.Closure.Bytes != 30 || got.Nix.Closure.Target != target {
 		t.Fatalf("last good closure not retained: %+v", got)
 	}
+	fake(t, "nix-store", `case "$*" in
+  *--requisites*) printf '/nix/store/ccc\n' ;;
+  *--size*) printf '99\n' ;;
+esac`)
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	got = read(t, o.Output)
+	if got.Nix.Closure.Error != "" || got.Nix.Closure.Target != newTarget || got.Nix.Closure.Bytes != 99 {
+		t.Fatalf("changed target not retried: %+v", got)
+	}
 }
 
 func TestFallbackAndFailureRetention(t *testing.T) {
@@ -119,7 +131,7 @@ func TestFallbackAndFailureRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := read(t, o.Output)
-	if got.Nix.Registered.Bytes != 27 || got.Nix.Registered.UpdatedAt != s.Nix.Registered.UpdatedAt || got.Nix.Registered.Error != "registered paths unavailable" {
+	if got.Nix.Registered.Bytes != 27 || got.Nix.Registered.UpdatedAt != s.Nix.Registered.UpdatedAt || got.Nix.Registered.Error != "registered refresh deferred" || got.Nix.Registered.Source != "nix-cli" {
 		t.Fatalf("last good registered value not retained: %+v", got)
 	}
 }
@@ -141,6 +153,27 @@ func TestMalformedSnapshotIsPreserved(t *testing.T) {
 	}
 	if string(b) != "not json" {
 		t.Fatal("existing file overwritten")
+	}
+}
+
+func TestUnknownSnapshotVersionIsPreserved(t *testing.T) {
+	o, _ := setup(t)
+	if err := os.MkdirAll(filepath.Dir(o.Output), 0700); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"version":2,"nix":{"registered":{},"closure":{}}}`)
+	if err := os.WriteFile(o.Output, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Refresh(o); err == nil {
+		t.Fatal("expected incompatible version")
+	}
+	got, err := os.ReadFile(o.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(data) {
+		t.Fatal("unknown version overwritten")
 	}
 }
 
@@ -198,7 +231,121 @@ func TestConcurrentRefreshDoesNotWaitOnLock(t *testing.T) {
 	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	start := time.Now()
-	if err := Refresh(o); err == nil || time.Since(start) > time.Second {
+	if err := Refresh(o); err != nil || time.Since(start) > time.Second {
 		t.Fatalf("lock wait: %v after %s", err, time.Since(start))
+	}
+}
+
+func TestBusyKeepsLastGoodWithoutFallback(t *testing.T) {
+	o, _ := setup(t)
+	fake(t, "sqlite3", "printf '2|12|0\\n'")
+	fake(t, "nix-store", "exit 1")
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	before := read(t, o.Output).Nix.Registered
+	fake(t, "sqlite3", "printf 'database is locked: private/path\\n' >&2; exit 5")
+	fake(t, "nix", "touch \"$FAKE_BIN/fallback-called\"; exit 1")
+	var diagnostics bytes.Buffer
+	o.Diagnostics = &diagnostics
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	after := read(t, o.Output).Nix.Registered
+	if after.Bytes != before.Bytes || after.UpdatedAt != before.UpdatedAt || after.Source != "sqlite" {
+		t.Fatalf("lost last good: %+v", after)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("FAKE_BIN"), "fallback-called")); !os.IsNotExist(err) {
+		t.Fatalf("fallback invoked: %v", err)
+	}
+	if strings.Contains(diagnostics.String(), "private/path") || !strings.Contains(diagnostics.String(), "busy") {
+		t.Fatalf("diagnostics: %q", diagnostics.String())
+	}
+}
+
+func TestFallbackRateLimitAndSQLiteRecovery(t *testing.T) {
+	o, _ := setup(t)
+	fake(t, "sqlite3", "exit 1")
+	fake(t, "nix", "printf '/nix/store/a 7\\n'; touch \"$FAKE_BIN/fallback-called\"")
+	fake(t, "nix-store", "exit 1")
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	first := read(t, o.Output).Nix.Registered
+	if first.Source != "nix-cli" || first.FallbackNextAttemptAt == "" {
+		t.Fatalf("fallback metadata: %+v", first)
+	}
+	if err := os.Remove(filepath.Join(os.Getenv("FAKE_BIN"), "fallback-called")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	second := read(t, o.Output).Nix.Registered
+	if _, err := os.Stat(filepath.Join(os.Getenv("FAKE_BIN"), "fallback-called")); !os.IsNotExist(err) {
+		t.Fatalf("fallback rerun: %v", err)
+	}
+	if second.UpdatedAt != first.UpdatedAt || second.Error == "" {
+		t.Fatalf("stale fallback not visible: %+v", second)
+	}
+	fake(t, "sqlite3", "printf '4|44|0\\n'")
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	third := read(t, o.Output).Nix.Registered
+	if third.Source != "sqlite" || third.Bytes != 44 || third.FallbackNextAttemptAt != "" || third.Error != "" {
+		t.Fatalf("sqlite recovery: %+v", third)
+	}
+}
+
+func TestFallbackExpiryAfterFailedAttempt(t *testing.T) {
+	o, _ := setup(t)
+	fake(t, "sqlite3", "exit 1")
+	fake(t, "nix", "touch \"$FAKE_BIN/fallback-called\"; exit 2")
+	fake(t, "nix-store", "exit 1")
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	s := read(t, o.Output)
+	if s.Nix.Registered.FallbackNextAttemptAt == "" {
+		t.Fatal("missing backoff after failure")
+	}
+	if err := os.Remove(filepath.Join(os.Getenv("FAKE_BIN"), "fallback-called")); err != nil {
+		t.Fatal(err)
+	}
+	s.Nix.Registered.FallbackNextAttemptAt = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	if err := writeAtomic(o.Output, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("FAKE_BIN"), "fallback-called")); err != nil {
+		t.Fatalf("fallback not retried: %v", err)
+	}
+}
+
+func TestRegisteredTimeoutDoesNotStarveClosure(t *testing.T) {
+	o, _ := setup(t)
+	oldService, oldRegistered, oldSQLite, oldClosure := serviceTimeout, registeredTimeout, sqliteTimeout, closureTimeout
+	serviceTimeout, registeredTimeout, sqliteTimeout, closureTimeout = 400*time.Millisecond, 80*time.Millisecond, 250*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() {
+		serviceTimeout, registeredTimeout, sqliteTimeout, closureTimeout = oldService, oldRegistered, oldSQLite, oldClosure
+	})
+	fake(t, "sqlite3", "sleep 1")
+	fake(t, "nix", "touch \"$FAKE_BIN/fallback-called\"")
+	fake(t, "nix-store", `case "$*" in
+  *--requisites*) printf '/nix/store/a\n' ;;
+  *--size*) printf '8\n' ;;
+esac`)
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	s := read(t, o.Output)
+	if s.Nix.Closure.Bytes != 8 || s.Nix.Registered.Error == "" {
+		t.Fatalf("budgets: %+v", s)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("FAKE_BIN"), "fallback-called")); !os.IsNotExist(err) {
+		t.Fatalf("fallback after timeout: %v", err)
 	}
 }

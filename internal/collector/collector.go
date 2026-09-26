@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/url"
@@ -18,11 +19,13 @@ import (
 )
 
 type Measurement struct {
-	Paths     int64  `json:"paths"`
-	Bytes     int64  `json:"bytes"`
-	UpdatedAt string `json:"updatedAt"`
-	CheckedAt string `json:"checkedAt"`
-	Error     string `json:"error"`
+	Paths                 int64  `json:"paths"`
+	Bytes                 int64  `json:"bytes"`
+	UpdatedAt             string `json:"updatedAt"`
+	CheckedAt             string `json:"checkedAt"`
+	Error                 string `json:"error"`
+	Source                string `json:"source,omitempty"`
+	FallbackNextAttemptAt string `json:"fallbackNextAttemptAt,omitempty"`
 }
 
 type Closure struct {
@@ -31,14 +34,26 @@ type Closure struct {
 }
 
 type Snapshot struct {
-	Version int `json:"version"`
-	Nix     struct {
+	Version          int    `json:"version"`
+	GeneratedAt      string `json:"generatedAt,omitempty"`
+	CollectorVersion string `json:"collectorVersion,omitempty"`
+	Nix              struct {
 		Registered Measurement `json:"registered"`
 		Closure    Closure     `json:"closure"`
 	} `json:"nix"`
 }
 
-type Options struct{ Output, Database, System string }
+type Options struct {
+	Output, Database, System, Version string
+	Diagnostics                       io.Writer
+}
+
+var now = time.Now
+var serviceTimeout = 120 * time.Second
+var registeredTimeout = 60 * time.Second
+var closureTimeout = 30 * time.Second
+var sqliteTimeout = 15 * time.Second
+var fallbackInterval = time.Hour
 
 func DefaultOutput() string {
 	base := os.Getenv("XDG_CACHE_HOME")
@@ -53,7 +68,7 @@ func DefaultOutput() string {
 }
 
 func Refresh(o Options) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), serviceTimeout)
 	defer cancel()
 	if o.Output == "" {
 		return errors.New("no output path")
@@ -73,7 +88,9 @@ func Refresh(o Options) error {
 		return err
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		return nil
+	} else if err != nil {
 		return err
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
@@ -85,28 +102,30 @@ func Refresh(o Options) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	paths, size, err := registered(ctx, o.Database)
-	if err == nil {
-		s.Nix.Registered = Measurement{Paths: paths, Bytes: size, UpdatedAt: now, CheckedAt: now}
-	} else {
-		s.Nix.Registered.Error = "registered paths unavailable"
-		s.Nix.Registered.CheckedAt = now
-	}
+	stamp := now().UTC().Format(time.RFC3339)
+	s.GeneratedAt = stamp
+	s.CollectorVersion = o.Version
+	registeredCtx, registeredCancel := context.WithTimeout(ctx, registeredTimeout)
+	s.Nix.Registered = collectRegistered(registeredCtx, o.Database, s.Nix.Registered, stamp, o.Diagnostics)
+	registeredCancel()
 	target, err := filepath.EvalSymlinks(o.System)
 	if err != nil {
 		s.Nix.Closure.Error = "system target unavailable"
-		s.Nix.Closure.CheckedAt = now
+		s.Nix.Closure.CheckedAt = stamp
+		diagnostic(o.Diagnostics, "closure", "target-unavailable")
 	} else if target != s.Nix.Closure.Target || s.Nix.Closure.UpdatedAt == "" || s.Nix.Closure.Error != "" {
-		paths, size, err := closure(ctx, target)
+		closureCtx, closureCancel := context.WithTimeout(ctx, closureTimeout)
+		paths, size, err := closure(closureCtx, target)
+		closureCancel()
 		if err == nil {
-			s.Nix.Closure = Closure{Measurement: Measurement{Paths: paths, Bytes: size, UpdatedAt: now, CheckedAt: now}, Target: target}
+			s.Nix.Closure = Closure{Measurement: Measurement{Paths: paths, Bytes: size, UpdatedAt: stamp, CheckedAt: stamp, Source: "nix-cli"}, Target: target}
 		} else {
 			s.Nix.Closure.Error = "system closure unavailable"
-			s.Nix.Closure.CheckedAt = now
+			s.Nix.Closure.CheckedAt = stamp
+			diagnostic(o.Diagnostics, "closure", errorCategory(err))
 		}
 	} else {
-		s.Nix.Closure.CheckedAt = now
+		s.Nix.Closure.CheckedAt = stamp
 	}
 	return writeAtomic(o.Output, s)
 }
@@ -126,11 +145,77 @@ func validSnapshot(s Snapshot) bool {
 				}
 			}
 		}
+		if m.FallbackNextAttemptAt != "" {
+			if _, err := time.Parse(time.RFC3339, m.FallbackNextAttemptAt); err != nil {
+				return false
+			}
+		}
+		if m.Source != "" && m.Source != "sqlite" && m.Source != "nix-cli" {
+			return false
+		}
 		if m.UpdatedAt == "" && (m.Paths != 0 || m.Bytes != 0) {
 			return false
 		}
 	}
+	if s.GeneratedAt != "" {
+		if _, err := time.Parse(time.RFC3339, s.GeneratedAt); err != nil {
+			return false
+		}
+	}
 	return s.Nix.Closure.Target == "" || s.Nix.Closure.UpdatedAt != ""
+}
+
+func diagnostic(w io.Writer, area, category string) {
+	if w != nil {
+		fmt.Fprintf(w, "collector %s: %s\n", area, category)
+	}
+}
+
+func errorCategory(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return "timeout"
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return "command-unavailable"
+	}
+	return "command-failed"
+}
+
+type sqliteFailure int
+
+const (
+	sqliteUnavailable sqliteFailure = iota
+	sqliteTransient
+)
+
+func collectRegistered(ctx context.Context, database string, old Measurement, stamp string, diagnostics io.Writer) Measurement {
+	paths, size, failure, category := sqliteRegistered(ctx, database)
+	if category == "" {
+		return Measurement{Paths: paths, Bytes: size, UpdatedAt: stamp, CheckedAt: stamp, Source: "sqlite"}
+	}
+	diagnostic(diagnostics, "registered sqlite", category)
+	previousCheckedAt := old.CheckedAt
+	old.CheckedAt = stamp
+	old.Error = "registered paths unavailable"
+	if failure == sqliteTransient {
+		return old
+	}
+	if old.FallbackNextAttemptAt != "" {
+		attempt, _ := time.Parse(time.RFC3339, old.FallbackNextAttemptAt)
+		if now().Before(attempt) {
+			old.CheckedAt = previousCheckedAt
+			old.Error = "registered refresh deferred"
+			diagnostic(diagnostics, "registered fallback", "rate-limited")
+			return old
+		}
+	}
+	old.FallbackNextAttemptAt = now().Add(fallbackInterval).UTC().Format(time.RFC3339)
+	paths, size, err := registeredFallback(ctx)
+	if err != nil {
+		diagnostic(diagnostics, "registered fallback", errorCategory(err))
+		return old
+	}
+	return Measurement{Paths: paths, Bytes: size, UpdatedAt: stamp, CheckedAt: stamp, Source: "nix-cli", FallbackNextAttemptAt: old.FallbackNextAttemptAt}
 }
 
 func readSnapshot(path string) ([]byte, error) {
@@ -178,13 +263,19 @@ func writeAtomic(path string, s Snapshot) error {
 
 // run puts every child in its own process group so a timeout also stops descendants.
 func run(parent context.Context, timeout time.Duration, name string, args []string, out io.Writer) error {
+	return runWithStderr(parent, timeout, name, args, out, nil)
+}
+
+func runWithStderr(parent context.Context, timeout time.Duration, name string, args []string, out, captured io.Writer) error {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdout = out
-	var stderr boundedBuffer
-	cmd.Stderr = &stderr
+	if captured == nil {
+		captured = &boundedBuffer{}
+	}
+	cmd.Stderr = captured
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -192,6 +283,9 @@ func run(parent context.Context, timeout time.Duration, name string, args []stri
 	go func() { done <- cmd.Wait() }()
 	select {
 	case err := <-done:
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return err
 	case <-ctx.Done():
 		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -210,21 +304,47 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 func registered(ctx context.Context, database string) (int64, int64, error) {
+	paths, size, _, category := sqliteRegistered(ctx, database)
+	if category != "" {
+		return 0, 0, errors.New(category)
+	}
+	return paths, size, nil
+}
+
+func sqliteRegistered(ctx context.Context, database string) (int64, int64, sqliteFailure, string) {
 	var out boundedBuffer
 	u := url.URL{Scheme: "file", Path: database}
 	u.RawQuery = "mode=ro"
-	err := run(ctx, 15*time.Second, "sqlite3", []string{"-readonly", "-batch", "-noheader", "-list", "-separator", "|", "-init", "/dev/null", u.String(), "PRAGMA query_only=ON; SELECT count(*), COALESCE(sum(narSize),0), COALESCE(sum(CASE WHEN narSize IS NULL OR typeof(narSize) != 'integer' OR narSize < 0 THEN 1 ELSE 0 END),0) FROM ValidPaths;"}, &out)
+	var stderr boundedBuffer
+	err := runWithStderr(ctx, sqliteTimeout, "sqlite3", []string{"-readonly", "-batch", "-noheader", "-list", "-separator", "|", "-init", "/dev/null", "-cmd", ".timeout 250", u.String(), "PRAGMA query_only=ON; SELECT count(*), COALESCE(sum(narSize),0), COALESCE(sum(CASE WHEN narSize IS NULL OR typeof(narSize) != 'integer' OR narSize < 0 THEN 1 ELSE 0 END),0) FROM ValidPaths;"}, &out, &stderr)
 	if err == nil {
 		parts := strings.Split(strings.TrimSpace(out.String()), "|")
 		if len(parts) == 3 && parts[2] == "0" {
 			count, e1 := nonnegative(parts[0])
 			size, e2 := nonnegative(parts[1])
 			if e1 == nil && e2 == nil {
-				return count, size, nil
+				return count, size, sqliteUnavailable, ""
 			}
 		}
+		return 0, 0, sqliteUnavailable, "invalid-output"
 	}
-	return registeredFallback(ctx)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return 0, 0, sqliteTransient, "timeout"
+	}
+	message := strings.ToLower(stderr.String())
+	if strings.Contains(message, "database is locked") || strings.Contains(message, "database is busy") || strings.Contains(message, "sqlite_busy") || strings.Contains(message, "sqlite_locked") {
+		return 0, 0, sqliteTransient, "busy"
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return 0, 0, sqliteUnavailable, "command-unavailable"
+	}
+	if strings.Contains(message, "no such table") || strings.Contains(message, "no such column") || strings.Contains(message, "malformed") || strings.Contains(message, "not a database") {
+		return 0, 0, sqliteUnavailable, "schema-invalid"
+	}
+	if strings.Contains(message, "unable to open database") || strings.Contains(message, "permission denied") {
+		return 0, 0, sqliteUnavailable, "database-inaccessible"
+	}
+	return 0, 0, sqliteUnavailable, "database-unavailable"
 }
 
 func registeredFallback(ctx context.Context) (int64, int64, error) {
