@@ -6,6 +6,7 @@ as its GitHub release notes.
 
 ## [Unreleased]
 
+- Add expandable mergerfs pool cards and separate NFS, SMB, SSHFS, and rclone mount rows, each controlled by its own setting. Mergerfs member details use optional branch metadata and `df` usage; pool capacity remains available when metadata cannot be read.
 - Group Btrfs mountpoints sharing a device into one expandable volume and optionally merge other repeated device rows. System mounts stay visible, network shares remain separate, and grouping or visibility changes apply without waiting for the next disk poll.
 
 ## [0.3.2] - 2026-09-20

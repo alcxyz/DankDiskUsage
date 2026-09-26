@@ -57,6 +57,20 @@ PluginSettings {
     }
 
     ToggleSetting {
+        settingKey: "showMergedStorage"
+        label: "Show merged storage"
+        description: "Display mergerfs pools with expandable member filesystem usage details"
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "showNetworkMounts"
+        label: "Show network shares"
+        description: "Display NFS, SMB, SSHFS, and rclone mounts as separate rows"
+        defaultValue: true
+    }
+
+    ToggleSetting {
         settingKey: "dedupeByDevice"
         label: "Merge mountpoints sharing a device"
         description: "Show one row per block device for the remaining filesystems (bind mounts, volumes mounted twice); hidden mountpoints are counted in a badge"

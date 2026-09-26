@@ -17,6 +17,8 @@ PluginComponent {
     property bool showZfs: true
     property bool showBtrfsVolumes: true
     property bool dedupeByDevice: false
+    property bool showMergedStorage: true
+    property bool showNetworkMounts: true
     property bool showNixStore: true
     property var excludeMounts: []
 
@@ -33,6 +35,11 @@ PluginComponent {
     property var zfsPoolGroups: []
     property var btrfsVolumeGroups: []
     property var otherMounts: []
+    property var mergerfsGroups: []
+    property var networkMounts: []
+    property var mergerfsMetadata: ({})
+    property var mergerfsQueue: []
+    property var mergerfsRequests: []
     property var nixStoreInfo: null
     property bool isScanningNixStore: false
     property int primaryUsagePercent: 0
@@ -40,7 +47,7 @@ PluginComponent {
 
     function loadSettings() {
         if (!pluginService || !pluginService.loadPluginData) return
-        var previousMountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, excludeMounts])
+        var previousMountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, showMergedStorage, showNetworkMounts, excludeMounts])
         refreshInterval = pluginService.loadPluginData("dankDiskUsage", "refreshInterval", 30) || 30
         warningThreshold = pluginService.loadPluginData("dankDiskUsage", "warningThreshold", 80) || 80
         criticalThreshold = pluginService.loadPluginData("dankDiskUsage", "criticalThreshold", 95) || 95
@@ -48,12 +55,16 @@ PluginComponent {
         showZfs = pluginService.loadPluginData("dankDiskUsage", "showZfs", true) !== false
         showBtrfsVolumes = pluginService.loadPluginData("dankDiskUsage", "showBtrfsVolumes", true) !== false
         dedupeByDevice = pluginService.loadPluginData("dankDiskUsage", "dedupeByDevice", false) === true
+        showMergedStorage = pluginService.loadPluginData("dankDiskUsage", "showMergedStorage", true) !== false
+        showNetworkMounts = pluginService.loadPluginData("dankDiskUsage", "showNetworkMounts", true) !== false
         showNixStore = pluginService.loadPluginData("dankDiskUsage", "showNixStore", true) !== false
         var saved = pluginService.loadPluginData("dankDiskUsage", "excludeMounts", [])
         excludeMounts = root.normalizeExcludeMounts(saved)
-        var mountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, excludeMounts])
-        if (lastDfOutput !== null && mountSettings !== previousMountSettings)
+        var mountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, showMergedStorage, showNetworkMounts, excludeMounts])
+        if (lastDfOutput !== null && mountSettings !== previousMountSettings) {
             root.updateMounts(lastDfOutput)
+            root.refreshMergerfsMetadata()
+        }
     }
 
     Component.onCompleted: {
@@ -109,8 +120,76 @@ PluginComponent {
             onStreamFinished: {
                 root.lastDfOutput = text
                 root.updateMounts(text)
+                root.refreshMergerfsMetadata()
             }
         }
+    }
+
+    // Optional topology enrichment. No mount options, file scans or privilege escalation.
+    property Process mergerfsProcess: Process {
+        property string mountPoint: ""
+        property string sourceDevice: ""
+        command: ["sh", "-c", "exec timeout -k 1s 3s getfattr --only-values -n user.mergerfs.branches -- \"$1/.mergerfs\" 2>/dev/null", "dank-disk-usage", mountPoint]
+        stdout: StdioCollector { id: mergerfsOutput }
+        onExited: (exitCode, exitStatus) => {
+            root.acceptMergerfsMetadata(mountPoint, sourceDevice, exitCode === 0 ? mergerfsOutput.text : "")
+            mergerfsNextTimer.restart()
+        }
+    }
+
+    Timer {
+        id: mergerfsNextTimer
+        interval: 1
+        onTriggered: root.startNextMergerfsRequest()
+    }
+
+    function refreshMergerfsMetadata() {
+        // Preserve queue order so slow pools cannot starve later pools on each poll.
+        var wanted = {}
+        for (var i = 0; i < mergerfsRequests.length; i++) {
+            var request = mergerfsRequests[i]
+            wanted[JSON.stringify([request.mount, request.device])] = request
+        }
+        var scheduled = {}
+        if (mergerfsProcess.running)
+            scheduled[JSON.stringify([mergerfsProcess.mountPoint, mergerfsProcess.sourceDevice])] = true
+        var queue = []
+        var candidates = mergerfsQueue.concat(mergerfsRequests)
+        for (var j = 0; j < candidates.length; j++) {
+            var candidate = candidates[j]
+            var key = JSON.stringify([candidate.mount, candidate.device])
+            if (!wanted[key] || scheduled[key]) continue
+            scheduled[key] = true
+            queue.push(candidate)
+        }
+        mergerfsQueue = queue
+        root.startNextMergerfsRequest()
+    }
+
+    function startNextMergerfsRequest() {
+        if (mergerfsQueue.length === 0 || mergerfsProcess.running) return
+        var queue = mergerfsQueue.slice()
+        var request = queue.shift()
+        mergerfsQueue = queue
+        mergerfsProcess.mountPoint = request.mount
+        mergerfsProcess.sourceDevice = request.device
+        mergerfsProcess.running = true
+    }
+
+    function acceptMergerfsMetadata(mount, device, text) {
+        // Ignore results for an unmounted/replaced pool from an older snapshot.
+        var current = false
+        for (var i = 0; i < mergerfsRequests.length; i++) {
+            if (mergerfsRequests[i].mount === mount && mergerfsRequests[i].device === device)
+                current = true
+        }
+        if (!current) return
+        var metadata = {}
+        for (var key in mergerfsMetadata) metadata[key] = mergerfsMetadata[key]
+        var branches = root.parseMergerfsBranches(text)
+        metadata[mount] = { device: device, branches: branches, available: branches.length > 0 }
+        mergerfsMetadata = metadata
+        if (lastDfOutput !== null) root.updateMounts(lastDfOutput)
     }
 
     // Reparse the cached df snapshot when display settings change. Fresh entries
@@ -118,6 +197,7 @@ PluginComponent {
     function updateMounts(text) {
         var lines = text.trim().split("\n")
         var all = []
+        var topologyEntries = []
         for (var i = 0; i < lines.length; i++) {
             var parts = lines[i].trim().split(/\s+/)
             if (parts.length < 7) continue
@@ -130,6 +210,7 @@ PluginComponent {
                 percent: parseInt(parts[5].replace("%", "")) || 0,
                 mount: parts.slice(6).join(" ")
             }
+            topologyEntries.push(entry)
             if (root.isExcluded(entry)) continue
             all.push(entry)
         }
@@ -138,8 +219,32 @@ PluginComponent {
         var pools = {}
         var other = []
 
+        // Mergerfs topology must see physical rows before optional device deduplication.
+        var requests = []
+        for (var r = 0; r < all.length; r++) {
+            if (root.showMergedStorage && root.isMergerfs(all[r])) requests.push({ mount: all[r].mount, device: all[r].device })
+        }
+        root.mergerfsRequests = requests
+        if (!root.showMergedStorage) root.mergerfsQueue = []
+        var merged = root.groupMergerfs(all, topologyEntries)
+        root.mergerfsGroups = merged.groups
+        var network = []
+        var local = []
+        for (var n = 0; n < merged.remaining.length; n++) {
+            var candidate = merged.remaining[n]
+            var protocol = root.networkProtocol(candidate.fstype)
+            if (protocol && root.mountPriority[candidate.mount] === undefined) {
+                if (root.showNetworkMounts) {
+                    candidate.protocol = protocol
+                    network.push(candidate)
+                }
+            } else {
+                local.push(candidate)
+            }
+        }
+        root.networkMounts = network
         // Collapse shared-device mounts before classification when enabled.
-        var volumes = root.groupBtrfsVolumes(all)
+        var volumes = root.groupBtrfsVolumes(local)
         all = root.dedupeSameDevice(volumes.remaining)
         var visibleVolumes = []
         for (var v = 0; v < volumes.groups.length; v++) {
@@ -297,6 +402,105 @@ PluginComponent {
         return root.isExcludedValue(entry.mount) || root.isExcludedValue(entry.device)
     }
 
+    function isMergerfs(entry) {
+        return entry.fstype === "fuse.mergerfs" || entry.fstype === "mergerfs"
+    }
+
+    function networkProtocol(fstype) {
+        switch (fstype) {
+        case "nfs": case "nfs4": return "NFS"
+        case "cifs": case "smb3": return "SMB"
+        case "sshfs": case "fuse.sshfs": return "SSHFS"
+        case "rclone": case "fuse.rclone": return "Rclone"
+        default: return ""
+        }
+    }
+
+    function parseMergerfsBranches(text) {
+        var branches = []
+        var parts = text.trim().split(":")
+        for (var i = 0; i < parts.length; i++) {
+            var match = /^(\/.*)=(RW|RO|NC)$/.exec(parts[i])
+            // Reject ambiguous/malformed metadata rather than invent member paths.
+            if (!match) return []
+            var path = match[1].replace(/\/+$/, "") || "/"
+            branches.push({ path: path, mode: match[2] })
+        }
+        return branches
+    }
+
+    function memberFilesystem(path, entries) {
+        var best = null
+        for (var i = 0; i < entries.length; i++) {
+            var entry = entries[i]
+            if (root.isMergerfs(entry)) continue
+            var mount = entry.mount.replace(/\/+$/, "") || "/"
+            // A missing member disk must not silently turn into the root disk.
+            if (mount === "/" && path !== "/") continue
+            if (path !== mount && path.indexOf(mount + "/") !== 0) continue
+            if (best === null || mount.length > best.mount.length) best = entry
+        }
+        return best
+    }
+
+    function groupMergerfs(entries, topologyEntries) {
+        var groups = []
+        var consumed = {}
+        for (var i = 0; i < entries.length; i++) {
+            var pool = entries[i]
+            if (!root.isMergerfs(pool)) continue
+            if (!root.showMergedStorage) {
+                if (root.mountPriority[pool.mount] === undefined) consumed[pool.mount] = true
+                continue
+            }
+            var metadata = (root.mergerfsMetadata || {})[pool.mount]
+            if (metadata && metadata.device !== pool.device) metadata = null
+            var members = []
+            var memberIndexes = {}
+            var branches = metadata && metadata.available ? metadata.branches : []
+            for (var j = 0; j < branches.length; j++) {
+                var branch = branches[j]
+                if (root.isExcludedValue(branch.path)) continue
+                var entry = root.memberFilesystem(branch.path, topologyEntries || entries)
+                if (entry && root.isExcluded(entry)) continue
+                var memberKey = entry ? "mount:" + entry.mount : "branch:" + branch.path
+                var existing = memberIndexes[memberKey]
+                if (existing !== undefined) {
+                    members[existing].branch += ", " + branch.path
+                    if (members[existing].mode.indexOf(branch.mode) === -1)
+                        members[existing].mode += "/" + branch.mode
+                    continue
+                }
+                memberIndexes[memberKey] = members.length
+                members.push({
+                    branch: branch.path, mode: branch.mode,
+                    mount: entry ? entry.mount : branch.path,
+                    fstype: entry ? entry.fstype : "",
+                    size: entry ? entry.size : "?",
+                    used: entry ? entry.used : "?",
+                    avail: entry ? entry.avail : "?",
+                    percent: entry ? entry.percent : null
+                })
+                // Preserve the system-storage rows even when also used by a pool.
+                if (entry && root.mountPriority[entry.mount] === undefined) consumed[entry.mount] = true
+            }
+            groups.push({
+                mount: pool.mount, device: pool.device, fstype: pool.fstype,
+                size: pool.size, used: pool.used, avail: pool.avail, percent: pool.percent,
+                priority: root.mountRank(pool.mount), members: members,
+                detailsAvailable: !!metadata && metadata.available,
+                detailsLoading: !metadata
+            })
+            consumed[pool.mount] = true
+        }
+        var remaining = []
+        for (var k = 0; k < entries.length; k++) {
+            if (!consumed[entries[k].mount]) remaining.push(entries[k])
+        }
+        groups.sort(function(a, b) { return a.priority - b.priority || a.mount.localeCompare(b.mount) })
+        return { groups: groups, remaining: remaining }
+    }
+
     // Rank used to pick the representative mountpoint of a shared device.
     // Priority mounts win; everything else is ordered shallowest path first.
     function mountRank(mount) {
@@ -384,7 +588,7 @@ PluginComponent {
 
         for (var i = 0; i < entries.length; i++) {
             var entry = entries[i]
-            if (!root.isBlockDevice(entry.device)) {
+            if (!root.isBlockDevice(entry.device) || root.networkProtocol(entry.fstype) || root.isMergerfs(entry)) {
                 result.push(entry)
                 continue
             }
@@ -427,6 +631,10 @@ PluginComponent {
             if (best === null || group.priority < best.priority) best = group
         }
 
+        for (var v = 0; v < mergerfsGroups.length; v++) {
+            var volume = mergerfsGroups[v]
+            if (volume.priority < 100 && (best === null || volume.priority < best.priority)) best = volume
+        }
         if (best !== null) {
             primaryUsagePercent = best.percent
             return
@@ -444,6 +652,12 @@ PluginComponent {
         }
         for (var b = 0; b < btrfsVolumeGroups.length; b++) {
             if (btrfsVolumeGroups[b].percent > worst) worst = btrfsVolumeGroups[b].percent
+        }
+        for (var v = 0; v < mergerfsGroups.length; v++) {
+            if (mergerfsGroups[v].percent > worst) worst = mergerfsGroups[v].percent
+        }
+        for (var n = 0; n < networkMounts.length; n++) {
+            if (networkMounts[n].percent > worst) worst = networkMounts[n].percent
         }
         primaryUsagePercent = worst
     }
@@ -1016,6 +1230,120 @@ PluginComponent {
                 }
             }
 
+            // ── Merged storage ──────────────────────────────────────
+            Column {
+                width: parent.width
+                spacing: Theme.spacingS
+                visible: root.mergerfsGroups.length > 0
+
+                StyledText {
+                    text: "Merged Storage"
+                    font.pixelSize: Theme.fontSizeMedium
+                    font.weight: Font.Medium
+                    color: Theme.surfaceVariantText
+                }
+
+                Repeater {
+                    model: root.mergerfsGroups
+
+                    Column {
+                        width: parent.width
+                        spacing: Theme.spacingXS
+                        readonly property string expansionKey: "mergerfs:" + modelData.mount
+
+                        Item {
+                            width: parent.width
+                            height: mergedCard.height
+
+                            StorageUsageCard {
+                                id: mergedCard
+                                width: parent.width
+                                entry: modelData
+                                title: modelData.mount
+                                subtitle: modelData.device + " · mergerfs"
+                                          + (modelData.detailsAvailable ? " · " + modelData.members.length + (modelData.members.length === 1 ? " filesystem" : " filesystems") : "")
+                                usageTint: root.usageColor(modelData.percent)
+                                expandable: true
+                                expanded: !!root.expandedPools[expansionKey]
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.togglePool(expansionKey)
+                            }
+                        }
+
+                        Column {
+                            width: parent.width
+                            spacing: Theme.spacingXS
+                            visible: !!root.expandedPools[expansionKey]
+
+                            StyledText {
+                                width: parent.width
+                                visible: modelData.detailsLoading || !modelData.detailsAvailable
+                                text: modelData.detailsLoading ? "Loading member details…" : "Member details unavailable"
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.surfaceVariantText
+                                elide: Text.ElideRight
+                            }
+
+                            Repeater {
+                                model: modelData.detailsAvailable && !modelData.detailsLoading ? modelData.members : []
+
+                                Item {
+                                    width: parent.width
+                                    height: memberCard.height
+
+                                    StorageUsageCard {
+                                        id: memberCard
+                                        width: parent.width
+                                        compact: true
+                                        entry: modelData
+                                        title: modelData.mount
+                                        subtitle: "Branch: " + modelData.branch + (modelData.mode ? " · " + modelData.mode : "")
+                                                  + (modelData.fstype ? " · " + modelData.fstype : "")
+                                        usageTint: root.usageColor(modelData.percent)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Network shares ──────────────────────────────────────
+            Column {
+                width: parent.width
+                spacing: Theme.spacingS
+                visible: root.networkMounts.length > 0
+
+                StyledText {
+                    text: "Network Shares"
+                    font.pixelSize: Theme.fontSizeMedium
+                    font.weight: Font.Medium
+                    color: Theme.surfaceVariantText
+                }
+
+                Repeater {
+                    model: root.networkMounts
+
+                    Item {
+                        width: parent.width
+                        height: networkCard.height
+
+                        StorageUsageCard {
+                            id: networkCard
+                            width: parent.width
+                            entry: modelData
+                            title: modelData.mount
+                            subtitle: modelData.protocol + " · " + modelData.device
+                            usageTint: root.usageColor(modelData.percent)
+                        }
+                    }
+                }
+            }
+
             // ── Other filesystems ───────────────────────────────────
             Column {
                 width: parent.width
@@ -1263,6 +1591,8 @@ PluginComponent {
                          && root.importantMounts.length === 0
                          && root.zfsPoolGroups.length === 0
                          && root.btrfsVolumeGroups.length === 0
+                         && root.mergerfsGroups.length === 0
+                         && root.networkMounts.length === 0
                          && root.otherMounts.length === 0
                          && root.nixStoreInfo === null
             }

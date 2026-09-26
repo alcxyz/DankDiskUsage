@@ -11,9 +11,11 @@ A bar widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankM
 - ZFS datasets grouped by pool with expandable detail views
 - Btrfs subvolumes of one filesystem grouped into a single expandable volume, so shared capacity is counted once instead of once per mountpoint
 - Optional same-device merging for the remaining filesystems (bind mounts, volumes mounted twice)
+- Mergerfs pools shown as expandable **Merged Storage** cards, with `df` usage for mapped member filesystems
+- Network shares (NFS, SMB, SSHFS, and rclone) shown as independent mount rows
 - Nix store total size on demand, plus current NixOS generation path count and closure size
 - Color-coded usage bars with configurable warning/critical thresholds
-- Excludes tmpfs, devtmpfs, overlay, and fuse mounts automatically
+- Excludes tmpfs, devtmpfs, overlay, and plain `fuse` mounts automatically
 - User-defined exclusions for mountpoints and ZFS datasets, with `*` wildcard support
 
 ## Installation
@@ -59,6 +61,19 @@ priority mounts such as `/` or `/home` stay visible. Changes to grouping, visibi
 and exclusions apply to the latest disk snapshot as soon as settings reload, without
 waiting for the next disk poll.
 
+**Show merged storage** displays mergerfs pool capacity from `df`. When available,
+optional `getfattr` metadata maps branch paths to member filesystem `df` usage; this
+metadata lookup does not scan files. Pool capacity remains visible if the attribute
+or a member mapping is unavailable. Member rows represented by a pool are removed
+from **Other**, while priority system mounts remain visible. `attr` and coreutils
+`timeout` enable member details.
+
+**Show network shares** displays NFS, SMB, SSHFS, and rclone mounts separately,
+with their protocol and source. Their capacities are not aggregated. Other FUSE
+mounts are not treated as network shares. See
+[ADR-007](docs/adr/ADR-007-merged-and-network-storage.md) for classification and
+member mapping rules.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Refresh interval | 30s | How often to poll disk usage data |
@@ -67,6 +82,8 @@ waiting for the next disk poll.
 | Show partitions | true | Display non-ZFS, non-system filesystems |
 | Show ZFS pools | true | Group ZFS datasets by pool with expandable detail |
 | Group Btrfs subvolumes | true | Merge subvolumes of one Btrfs filesystem into a single expandable volume |
+| Show merged storage | true | Show mergerfs pools and mapped member filesystem usage |
+| Show network shares | true | Show supported network mounts as independent rows |
 | Merge mountpoints sharing a device | false | Collapse the remaining same-device mountpoints into one row with a `+N mounts` badge |
 | Show Nix info | true | Display cached store size plus current generation closure details |
 | Excluded mountpoints or datasets | [] | Mountpoints or ZFS datasets to hide; supports `*` wildcards such as `/run/user/1000/*` |
