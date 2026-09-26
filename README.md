@@ -46,11 +46,18 @@ For an identifiable development build, stage `dist/dev` first and copy
 
 The Nix section refreshes current generation closure details automatically. The full `/nix/store` size is cached and only rescanned when you click the Nix section refresh button, because walking the whole store can be expensive.
 
-`df` reports per mountpoint, so one filesystem mounted at several points is reported once
-per mountpoint with identical figures. **Group Btrfs subvolumes** and **Merge mountpoints
-sharing a device** collapse those duplicates so the popout totals match the physical
-devices; see [ADR-006](docs/adr/ADR-006-device-aware-mount-grouping.md). Only real block
-devices are merged, never pseudo sources such as `none`, ZFS datasets, or network shares.
+`df` can report several Btrfs mountpoints with the same filesystem-wide usage.
+**Group Btrfs subvolumes** presents that capacity once and keeps the mountpoint list
+expandable. **Merge mountpoints sharing a device** optionally collapses other repeated
+device rows; GNU `df` already omits ordinary duplicate bind mounts in many cases.
+Grouping conservatively recognizes sources under `/dev/`; pseudo sources, ZFS datasets,
+network shares, and paths outside `/dev/` remain separate. See
+[ADR-006](docs/adr/ADR-006-device-aware-mount-grouping.md).
+
+**Show partitions** also controls Btrfs groups without system mounts. Groups containing
+priority mounts such as `/` or `/home` stay visible. Changes to grouping, visibility,
+and exclusions apply to the latest disk snapshot as soon as settings reload, without
+waiting for the next disk poll.
 
 | Setting | Default | Description |
 |---------|---------|-------------|

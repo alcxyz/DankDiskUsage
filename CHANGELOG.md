@@ -6,6 +6,8 @@ as its GitHub release notes.
 
 ## [Unreleased]
 
+- Group Btrfs mountpoints sharing a device into one expandable volume and optionally merge other repeated device rows. System mounts stay visible, network shares remain separate, and grouping or visibility changes apply without waiting for the next disk poll.
+
 ## [0.3.2] - 2026-09-20
 
 - Development installs (built from a checkout that isn't a clean release tag) now stamp themselves with an identifiable version such as `X.Y.Z-dev.<commit>`, with a `.dirty` suffix when the working tree has local changes, so it's obvious at a glance when you're not running an official release. Official releases are unaffected and continue to use the plain `plugin.json` version; a new packaging script (`scripts/package.py`) produces these development builds without changing the tracked source.

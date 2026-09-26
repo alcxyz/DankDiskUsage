@@ -28,6 +28,7 @@ PluginComponent {
 
     // ── Runtime state ───────────────────────────────────────────────
     property bool isLoading: true
+    property var lastDfOutput: null
     property var importantMounts: []
     property var zfsPoolGroups: []
     property var btrfsVolumeGroups: []
@@ -39,6 +40,7 @@ PluginComponent {
 
     function loadSettings() {
         if (!pluginService || !pluginService.loadPluginData) return
+        var previousMountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, excludeMounts])
         refreshInterval = pluginService.loadPluginData("dankDiskUsage", "refreshInterval", 30) || 30
         warningThreshold = pluginService.loadPluginData("dankDiskUsage", "warningThreshold", 80) || 80
         criticalThreshold = pluginService.loadPluginData("dankDiskUsage", "criticalThreshold", 95) || 95
@@ -49,6 +51,9 @@ PluginComponent {
         showNixStore = pluginService.loadPluginData("dankDiskUsage", "showNixStore", true) !== false
         var saved = pluginService.loadPluginData("dankDiskUsage", "excludeMounts", [])
         excludeMounts = root.normalizeExcludeMounts(saved)
+        var mountSettings = JSON.stringify([showPartitions, showZfs, showBtrfsVolumes, dedupeByDevice, excludeMounts])
+        if (lastDfOutput !== null && mountSettings !== previousMountSettings)
+            root.updateMounts(lastDfOutput)
     }
 
     Component.onCompleted: {
@@ -102,71 +107,81 @@ PluginComponent {
 
         stdout: StdioCollector {
             onStreamFinished: {
-                var lines = text.trim().split("\n")
-                var all = []
-                for (var i = 0; i < lines.length; i++) {
-                    var parts = lines[i].trim().split(/\s+/)
-                    if (parts.length < 7) continue
-                    var entry = {
-                        device: parts[0],
-                        fstype: parts[1],
-                        size: parts[2],
-                        used: parts[3],
-                        avail: parts[4],
-                        percent: parseInt(parts[5].replace("%", "")) || 0,
-                        mount: parts.slice(6).join(" ")
-                    }
-                    if (root.isExcluded(entry)) continue
-                    all.push(entry)
-                }
-
-                var important = []
-                var pools = {}
-                var other = []
-
-                // Collapse mountpoints that are only different views of one
-                // filesystem, so a single device is never counted more than
-                // once. Btrfs subvolumes get an expandable group; everything
-                // else falls back to the generic same-device dedupe.
-                var volumes = root.groupBtrfsVolumes(all)
-                all = root.dedupeSameDevice(volumes.remaining)
-                root.btrfsVolumeGroups = volumes.groups
-
-                for (var j = 0; j < all.length; j++) {
-                    var entry = all[j]
-                    var prio = root.mountPriority[entry.mount]
-                    if (prio !== undefined) {
-                        entry.priority = prio
-                        important.push(entry)
-                    } else if (entry.fstype === "zfs" && root.showZfs) {
-                        var poolName = entry.device.indexOf("/") > 0
-                            ? entry.device.substring(0, entry.device.indexOf("/"))
-                            : entry.device
-                        // Skip bare pool root datasets (e.g. zpool mounted at /zpool, ~0% used)
-                        if (entry.device === poolName && entry.percent <= 1) continue
-                        if (!pools[poolName]) pools[poolName] = { poolName: poolName, datasets: [], freeSpace: entry.avail }
-                        pools[poolName].datasets.push(entry)
-                    } else if (root.showPartitions) {
-                        other.push(entry)
-                    }
-                }
-
-                important.sort(function(a, b) { return a.priority - b.priority })
-                root.importantMounts = important
-
-                var poolList = []
-                for (var pn in pools) {
-                    pools[pn].datasets.sort(function(a, b) { return b.percent - a.percent })
-                    poolList.push(pools[pn])
-                }
-                poolList.sort(function(a, b) { return a.poolName.localeCompare(b.poolName) })
-                root.zfsPoolGroups = poolList
-
-                root.otherMounts = other
-                root.updatePrimaryUsage()
-                root.isLoading = false
+                root.lastDfOutput = text
+                root.updateMounts(text)
             }
         }
+    }
+
+    // Reparse the cached df snapshot when display settings change. Fresh entries
+    // keep dedupe metadata from leaking into subsequent ungrouped views.
+    function updateMounts(text) {
+        var lines = text.trim().split("\n")
+        var all = []
+        for (var i = 0; i < lines.length; i++) {
+            var parts = lines[i].trim().split(/\s+/)
+            if (parts.length < 7) continue
+            var entry = {
+                device: parts[0],
+                fstype: parts[1],
+                size: parts[2],
+                used: parts[3],
+                avail: parts[4],
+                percent: parseInt(parts[5].replace("%", "")) || 0,
+                mount: parts.slice(6).join(" ")
+            }
+            if (root.isExcluded(entry)) continue
+            all.push(entry)
+        }
+
+        var important = []
+        var pools = {}
+        var other = []
+
+        // Collapse shared-device mounts before classification when enabled.
+        var volumes = root.groupBtrfsVolumes(all)
+        all = root.dedupeSameDevice(volumes.remaining)
+        var visibleVolumes = []
+        for (var v = 0; v < volumes.groups.length; v++) {
+            var volume = volumes.groups[v]
+            // System mounts remain visible even when ordinary partitions are hidden.
+            if (root.showPartitions || volume.priority < 100) visibleVolumes.push(volume)
+        }
+        root.btrfsVolumeGroups = visibleVolumes
+
+        for (var j = 0; j < all.length; j++) {
+            var entry = all[j]
+            var prio = root.mountPriority[entry.mount]
+            if (prio !== undefined) {
+                entry.priority = prio
+                important.push(entry)
+            } else if (entry.fstype === "zfs" && root.showZfs) {
+                var poolName = entry.device.indexOf("/") > 0
+                    ? entry.device.substring(0, entry.device.indexOf("/"))
+                    : entry.device
+                // Skip bare pool root datasets (e.g. zpool mounted at /zpool, ~0% used)
+                if (entry.device === poolName && entry.percent <= 1) continue
+                if (!pools[poolName]) pools[poolName] = { poolName: poolName, datasets: [], freeSpace: entry.avail }
+                pools[poolName].datasets.push(entry)
+            } else if (root.showPartitions) {
+                other.push(entry)
+            }
+        }
+
+        important.sort(function(a, b) { return a.priority - b.priority })
+        root.importantMounts = important
+
+        var poolList = []
+        for (var pn in pools) {
+            pools[pn].datasets.sort(function(a, b) { return b.percent - a.percent })
+            poolList.push(pools[pn])
+        }
+        poolList.sort(function(a, b) { return a.poolName.localeCompare(b.poolName) })
+        root.zfsPoolGroups = poolList
+
+        root.otherMounts = other
+        root.updatePrimaryUsage()
+        root.isLoading = false
     }
 
     // ── Nix current-system closure info ───────────────────────────────
@@ -297,11 +312,11 @@ PluginComponent {
         return a.mount.localeCompare(b.mount)
     }
 
-    // Only real block devices can legitimately back several mountpoints.
-    // Pseudo sources (none, tmpfs, udev, zpool/dataset, host:/export) repeat
-    // across unrelated filesystems and must never be collapsed.
+    // Conservatively recognize Linux device paths from df without another
+    // subprocess. Absolute paths alone are insufficient: SMB sources start //.
+    // Sources outside /dev/ remain separate, even if they alias a local device.
     function isBlockDevice(device) {
-        return typeof device === "string" && device.charAt(0) === "/"
+        return typeof device === "string" && device.indexOf("/dev/") === 0 && device.length > 5
     }
 
     // Btrfs subvolumes of one filesystem each report the whole filesystem in
@@ -832,7 +847,7 @@ PluginComponent {
             Column {
                 width: parent.width
                 spacing: Theme.spacingS
-                visible: root.showBtrfsVolumes && root.btrfsVolumeGroups.length > 0
+                visible: root.btrfsVolumeGroups.length > 0
 
                 StyledText {
                     text: "Btrfs Volumes"

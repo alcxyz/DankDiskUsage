@@ -21,6 +21,15 @@ Reload after changes:
 dms ipc call plugins reload dankDiskUsage
 ```
 
+Run the automated checks with Python 3 and Node.js 18 or later:
+
+```bash
+bash test.sh
+```
+
+The mount tests execute the widget's JavaScript functions against disk-output fixtures;
+reload the plugin in DMS to check QML rendering and interaction.
+
 ## Project structure
 
 - `plugin.json` -- plugin manifest (id, type, permissions, settings schema)
