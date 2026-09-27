@@ -4,6 +4,34 @@ A bar widget plugin for [DankMaterialShell](https://github.com/AvengeMedia/DankM
 
 ![Screenshot](docs/screenshot.png)
 
+## Why this plugin?
+
+DankDiskUsage brings local filesystems, ZFS pools, Btrfs volumes, mergerfs pools,
+external drives, and network shares into one capacity overview. Expand storage
+groups to see their members and choose which sections and mountpoints to display.
+Optional Nix information includes the current system closure and cached manual
+disk-usage scans. An opt-in background collector also provides registered Nix
+object sizes, clearly distinguished from physical disk usage.
+
+Other plugins in the DMS ecosystem offer useful alternatives:
+
+- [Disk Monitor](https://github.com/rollecode/dms-disk-monitor) provides a compact
+  root-disk or combined-disk usage pill, filesystem details, and an option to
+  include network mounts.
+- [Storage Monitor](https://github.com/YoungJurry/dms-storage-monitor) combines
+  storage usage with mounting, unmounting, and safe-removal actions through
+  udisks2.
+- [Nix Monitor](https://github.com/antonjah/nix-monitor) focuses on Nix store usage
+  and system generations, with update checks and configurable rebuild and
+  garbage-collection actions.
+
+DankDiskUsage focuses on capacity visibility and storage grouping. Mount
+management and system maintenance are outside its scope. Its specialized
+sections are optional, so ordinary filesystem monitoring works without ZFS,
+Btrfs, mergerfs, or Nix. The descriptions above were checked against the linked
+projects' documentation on 2026-09-27; visit them for current capabilities and
+setup requirements.
+
 ## Features
 
 - Smart mount priority: system paths (/, /home, /nix, /var, /boot) are shown prominently in "System Storage"
