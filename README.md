@@ -85,7 +85,7 @@ it in plugin settings after the restart.
 
 By default, the Nix section refreshes current generation closure details automatically. The full `/nix/store` disk usage is cached and only rescanned when you click the Nix section refresh button.
 
-An optional [background collector](docs/collector.md) refreshes registered Nix object sizes on a user timer, independently of the DMS session. Enable **Use cached Nix collector** after installing and enabling the helper. Registered size is logical NAR metadata, separate from scanned disk usage; the widget only reads the cached snapshot in this mode.
+An optional [background collector](docs/collector.md) refreshes registered Nix object sizes automatically while DMS runs. Enable **Use cached Nix collector** and ensure the plugin package containing its helper is available on DMS's `PATH`; no service setup is needed for updates during the session. An optional user timer can continue updates when DMS is not running. Registered size is logical NAR metadata, separate from scanned disk usage.
 
 `df` can report several Btrfs mountpoints with the same filesystem-wide usage.
 **Group Btrfs subvolumes** presents that capacity once and keeps the mountpoint list
@@ -137,7 +137,7 @@ member mapping rules.
 | Show network shares | true | Show supported network mounts as independent rows |
 | Merge mountpoints sharing a device | false | Collapse the remaining same-device mountpoints into one row with a `+N mounts` badge |
 | Show Nix info | true | Display cached store size plus current generation closure details |
-| Use cached Nix collector | false | Read Nix metadata from the optional scheduled helper |
+| Use cached Nix collector | false | Automatically refresh and read cached Nix metadata through the bundled helper |
 | Excluded mountpoints or datasets | [] | Mountpoints or ZFS datasets to hide; supports `*` wildcards such as `/run/user/1000/*` |
 
 ## Development builds

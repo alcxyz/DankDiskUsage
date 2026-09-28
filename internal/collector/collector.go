@@ -46,7 +46,11 @@ type Snapshot struct {
 type Options struct {
 	Output, Database, System, Version string
 	Diagnostics                       io.Writer
+	// Nil uses DefaultRefreshInterval; zero forces a refresh.
+	RefreshInterval *time.Duration
 }
+
+const DefaultRefreshInterval = 15 * time.Minute
 
 var now = time.Now
 var serviceTimeout = 120 * time.Second
@@ -68,6 +72,13 @@ func DefaultOutput() string {
 }
 
 func Refresh(o Options) error {
+	interval := DefaultRefreshInterval
+	if o.RefreshInterval != nil {
+		interval = *o.RefreshInterval
+	}
+	if interval < 0 {
+		return errors.New("refresh interval must not be negative")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), serviceTimeout)
 	defer cancel()
 	if o.Output == "" {
@@ -98,6 +109,13 @@ func Refresh(o Options) error {
 	if data, err := readSnapshot(o.Output); err == nil {
 		if err := json.Unmarshal(data, &s); err != nil || !validSnapshot(s) {
 			return errors.New("existing snapshot is incompatible")
+		}
+		if s.GeneratedAt != "" && interval > 0 {
+			generated, _ := time.Parse(time.RFC3339, s.GeneratedAt)
+			current := now().UTC()
+			if !generated.After(current) && current.Sub(generated) < interval {
+				return nil
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		return err

@@ -6,6 +6,8 @@ as its GitHub release notes.
 
 ## [Unreleased]
 
+- Automatically invoke the cached Nix helper when enabled, with a shared 15-minute refresh guard; keep the systemd timer optional for updates while DMS is not running.
+
 ## [0.4.0] - 2026-09-28
 
 - Restart DMS after upgrading from 0.3.2 or earlier so newly added QML components are discovered; re-enable the plugin if a failed hot-reload disabled it.

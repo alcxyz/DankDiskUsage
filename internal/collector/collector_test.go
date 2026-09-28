@@ -38,7 +38,8 @@ func setup(t *testing.T) (Options, string) {
 	if err := os.Symlink(store, system); err != nil {
 		t.Fatal(err)
 	}
-	return Options{Output: filepath.Join(dir, "cache", "snapshot.json"), Database: filepath.Join(dir, "db"), System: system}, store
+	force := time.Duration(0)
+	return Options{Output: filepath.Join(dir, "cache", "snapshot.json"), Database: filepath.Join(dir, "db"), System: system, RefreshInterval: &force}, store
 }
 
 func read(t *testing.T, path string) Snapshot {
@@ -111,6 +112,94 @@ esac`)
 	got = read(t, o.Output)
 	if got.Nix.Closure.Error != "" || got.Nix.Closure.Target != newTarget || got.Nix.Closure.Bytes != 99 {
 		t.Fatalf("changed target not retried: %+v", got)
+	}
+}
+
+func TestRefreshIntervalSkipsFreshSnapshotAndRunsWhenDue(t *testing.T) {
+	o, _ := setup(t)
+	o.RefreshInterval = nil // The collector API defaults to the timer cadence.
+	start := time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC)
+	previousNow := now
+	now = func() time.Time { return start }
+	t.Cleanup(func() { now = previousNow })
+	fake(t, "sqlite3", "printf '1|11|0\n'")
+	fake(t, "nix-store", "exit 1")
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(o.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake(t, "sqlite3", "touch \"$FAKE_BIN/sqlite-called\"; printf '2|22|0\n'")
+	now = func() time.Time { return start.Add(DefaultRefreshInterval - time.Second) }
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(o.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("fresh snapshot was rewritten")
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("FAKE_BIN"), "sqlite-called")); !os.IsNotExist(err) {
+		t.Fatalf("fresh snapshot ran sqlite: %v", err)
+	}
+	now = func() time.Time { return start.Add(DefaultRefreshInterval) }
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	got := read(t, o.Output)
+	if got.Nix.Registered.Bytes != 22 || got.GeneratedAt != now().Format(time.RFC3339) {
+		t.Fatalf("due snapshot not refreshed: %+v", got)
+	}
+}
+
+func TestFutureSnapshotDoesNotSuppressRefresh(t *testing.T) {
+	o, _ := setup(t)
+	o.RefreshInterval = nil
+	start := time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC)
+	previousNow := now
+	now = func() time.Time { return start }
+	t.Cleanup(func() { now = previousNow })
+	fake(t, "sqlite3", "printf '1|11|0\n'")
+	fake(t, "nix-store", "exit 1")
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	s := read(t, o.Output)
+	s.GeneratedAt = start.Add(time.Hour).Format(time.RFC3339)
+	if err := writeAtomic(o.Output, s); err != nil {
+		t.Fatal(err)
+	}
+	fake(t, "sqlite3", "printf '2|22|0\n'")
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, o.Output); got.Nix.Registered.Bytes != 22 || got.GeneratedAt != start.Format(time.RFC3339) {
+		t.Fatalf("future timestamp suppressed refresh: %+v", got)
+	}
+}
+
+func TestZeroRefreshIntervalForcesAndNegativeIsRejected(t *testing.T) {
+	o, _ := setup(t) // Explicit zero interval.
+	fake(t, "sqlite3", "printf '1|11|0\n'")
+	fake(t, "nix-store", "exit 1")
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	fake(t, "sqlite3", "printf '2|22|0\n'")
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, o.Output); got.Nix.Registered.Bytes != 22 {
+		t.Fatalf("zero interval did not force refresh: %+v", got)
+	}
+	negative := -time.Second
+	o.RefreshInterval = &negative
+	if err := Refresh(o); err == nil || !strings.Contains(err.Error(), "refresh interval") {
+		t.Fatalf("negative interval accepted: %v", err)
 	}
 }
 

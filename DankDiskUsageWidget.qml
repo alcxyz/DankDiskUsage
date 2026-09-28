@@ -47,6 +47,8 @@ PluginComponent {
     property var nixStoreInfo: null
     property var collectorSnapshot: null
     property string collectorReadError: ""
+    property string collectorRunError: ""
+    property double collectorLastAttempt: 0
     property double collectorNow: Date.now()
     property bool isScanningNixStore: false
     property int primaryUsagePercent: 0
@@ -79,6 +81,7 @@ PluginComponent {
         if (showNixStore && useCollector && !wasCollecting) {
             root.collectorNow = Date.now()
             collectorFile.reload()
+            root.refreshCollector(true)
         } else if (showNixStore && !useCollector && (wasCollecting === true || wasShowingNixStore === false)
                    && !nixPathCountProcess.running) {
             nixPathCountProcess.running = true
@@ -121,8 +124,38 @@ PluginComponent {
     function refreshAll() {
         if (!dfProcess.running) dfProcess.running = true
         root.collectorNow = Date.now()
-        if (root.showNixStore && root.useCollector) collectorFile.reload()
+        if (root.showNixStore && root.useCollector) {
+            collectorFile.reload()
+            root.refreshCollector(false)
+        }
         if (root.showNixStore && !root.useCollector && !nixPathCountProcess.running) nixPathCountProcess.running = true
+    }
+
+    // The helper owns the shared collection interval; this only bounds launches.
+    function refreshCollector(immediate) {
+        if (!root.showNixStore || !root.useCollector || collectorProcess.running) return
+        var current = Date.now()
+        if (!immediate && current >= root.collectorLastAttempt
+                && current - root.collectorLastAttempt < 60000) return
+        root.collectorLastAttempt = current
+        root.collectorRunError = ""
+        collectorProcess.running = true
+    }
+
+    function collectorFinished(exitCode) {
+        if (!root.showNixStore || !root.useCollector) return
+        root.collectorRunError = exitCode === 127
+                ? "Nix collector helper not found. Install the full plugin package and make dankdiskusage-collector available on DMS's PATH."
+                : exitCode !== 0 ? "Nix collector failed. Check the helper installation and cache permissions." : ""
+        collectorFile.reload()
+    }
+
+    Process {
+        id: collectorProcess
+        // A shell check makes a missing executable a handled exit, not a spawn failure.
+        command: ["sh", "-c", "command -v dankdiskusage-collector >/dev/null 2>&1 || exit 127; exec dankdiskusage-collector"]
+        running: false
+        onExited: (exitCode, exitStatus) => root.collectorFinished(exitCode)
     }
 
     readonly property string collectorCachePath: {
@@ -1740,8 +1773,8 @@ PluginComponent {
 
                         StyledText {
                             width: parent.width
-                            visible: root.collectorReadError !== ""
-                            text: root.collectorReadError + (root.collectorSnapshot ? " · showing last snapshot" : "")
+                            visible: root.collectorRunError !== "" || root.collectorReadError !== ""
+                            text: (root.collectorRunError || root.collectorReadError) + (root.collectorSnapshot ? " · showing last snapshot" : "")
                             textFormat: Text.PlainText
                             font.pixelSize: Theme.fontSizeSmall
                             color: Theme.surfaceVariantText
