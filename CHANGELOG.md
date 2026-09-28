@@ -6,6 +6,10 @@ as its GitHub release notes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
+- Restart DMS after upgrading from 0.3.2 or earlier so newly added QML components are discovered; re-enable the plugin if a failed hot-reload disabled it.
+
 - Bound and report collector fallback retries, isolate measurement budgets, and improve optional installation and XDG guidance.
 
 - Add an optional oneshot Nix store collector with an atomic shared snapshot and an opt-in 15-minute user timer. Collector mode is disabled by default; enabling its timer refreshes whole-store logical registered NAR sizes, while physical `du` scans remain manual. See [collector setup](docs/collector.md) and [ADR-009](docs/adr/ADR-009-shared-storage-collector.md).

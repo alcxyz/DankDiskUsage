@@ -73,6 +73,14 @@ Copy the plugin directory to `~/.config/DankMaterialShell/plugins/DankDiskUsage/
 For an identifiable development build, stage `dist/dev` first and copy
 `dist/dev/share/dms-plugins/DankDiskUsage/` instead of the raw checkout.
 
+### Upgrading from 0.3.2 or earlier
+
+Restart DMS after updating the plugin files. This update adds a QML component;
+a running QML engine can retain the old directory's type list and report
+`StorageUsageCard is not a type` during hot-reload. Restarting loads the complete
+updated plugin. If DMS disabled the plugin after a failed hot-reload, re-enable
+it in plugin settings after the restart.
+
 ## Settings
 
 By default, the Nix section refreshes current generation closure details automatically. The full `/nix/store` disk usage is cached and only rescanned when you click the Nix section refresh button.
