@@ -37,8 +37,15 @@ PluginSettings {
 
     ToggleSetting {
         settingKey: "showPartitions"
-        label: "Show partitions"
-        description: "Display standard filesystem partitions (ext4, btrfs, xfs, etc.)"
+        label: "Show local filesystems"
+        description: "Display remaining internal local filesystems and non-system Btrfs volumes"
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "showExternalDrives"
+        label: "Show external drives"
+        description: "Display USB and removable drives separately from local filesystems"
         defaultValue: true
     }
 
@@ -50,10 +57,45 @@ PluginSettings {
     }
 
     ToggleSetting {
+        settingKey: "showBtrfsVolumes"
+        label: "Group Btrfs subvolumes"
+        description: "Collapse subvolumes of one Btrfs filesystem into a single expandable volume instead of repeating its capacity per mountpoint"
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "showMergedStorage"
+        label: "Show merged storage"
+        description: "Display mergerfs pools with expandable member filesystem usage details"
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "showNetworkMounts"
+        label: "Show network shares"
+        description: "Display NFS, SMB, SSHFS, and rclone mounts as separate rows"
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "dedupeByDevice"
+        label: "Merge mountpoints sharing a device"
+        description: "Show one row per block device for the remaining filesystems (bind mounts, volumes mounted twice); hidden mountpoints are counted in a badge"
+        defaultValue: false
+    }
+
+    ToggleSetting {
         settingKey: "showNixStore"
         label: "Show Nix info"
         description: "Display cached store size plus current generation closure details"
         defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "useCollector"
+        label: "Use cached Nix collector"
+        description: "Read registered store and closure metadata from the collector cache; keep the manual disk scan available"
+        defaultValue: false
     }
 
     ListSettingWithInput {

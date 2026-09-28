@@ -1,6 +1,6 @@
 # ADR-004: Manual Nix store size scans
 
-**Status:** Accepted
+**Status:** Accepted (automatic logical metadata added by [ADR-009](ADR-009-shared-storage-collector.md))
 **Date:** 2026-06-01
 **Applies to:** `DankDiskUsageWidget.qml`
 
@@ -19,9 +19,9 @@ The whole store size is different. `df /nix/store` is fast but incorrect for thi
 
 Refresh current generation closure size and path count automatically with the normal widget refresh.
 
-Do not run whole-store scans automatically. Show the last cached store total when available, show `Not scanned` when unavailable, and run `du -sh /nix/store` only when the user clicks the Nix section refresh button.
+Do not run whole-store physical scans automatically. In either mode, show the last cached store disk usage when available, show `Not scanned` when unavailable, and run `du -sh /nix/store` only when the user clicks the Nix section refresh button. Cache that manual result in plugin state alongside the current generation values.
 
-Cache the manual store total in plugin state alongside the current generation values.
+Collector mode (ADR-009) offers a whole-store aggregate of registered NAR logical sizes, refreshed on each opted-in timer run. It uses a compatible read-only SQLite query or a bounded public Nix CLI fallback. Label it as logical registered size, never as physical disk allocation; do not invoke `du` automatically.
 
 ## Alternatives Considered
 
@@ -29,10 +29,11 @@ Cache the manual store total in plugin state alongside the current generation va
 
 **Run `du -sh /nix/store` on every refresh:** Rejected because it can be expensive and surprising on large stores.
 
-**Use Nix store metadata for all paths:** Rejected for now because it reports Nix object/NAR size semantics rather than the intuitive filesystem size users expect from a disk usage widget.
+**Use Nix store metadata for all paths:** Originally rejected because NAR size is not physical usage. ADR-009 accepts it as a separately labeled automatic logical-size measurement.
 
 ## Consequences
 
 - The Nix section can show both whole-store and current-generation information.
 - The widget avoids surprise background scans of `/nix/store`.
-- Store total can be stale until the user manually refreshes it.
+- Scanned disk usage can be stale until the user manually refreshes it.
+- Collector mode refreshes the registered NAR total whenever its user timer runs; this logical measure is not interchangeable with the `du` result. Physical `du` scans remain manual, including when collector mode is enabled. Shared storage collector phases are tracked in [issue #22](https://github.com/alcxyz/DankDiskUsage/issues/22).

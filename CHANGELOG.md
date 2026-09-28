@@ -6,6 +6,18 @@ as its GitHub release notes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
+- Restart DMS after upgrading from 0.3.2 or earlier so newly added QML components are discovered; re-enable the plugin if a failed hot-reload disabled it.
+
+- Bound and report collector fallback retries, isolate measurement budgets, and improve optional installation and XDG guidance.
+
+- Add an optional oneshot Nix store collector with an atomic shared snapshot and an opt-in 15-minute user timer. Collector mode is disabled by default; enabling its timer refreshes whole-store logical registered NAR sizes, while physical `du` scans remain manual. See [collector setup](docs/collector.md) and [ADR-009](docs/adr/ADR-009-shared-storage-collector.md).
+
+- Add expandable mergerfs pool cards and separate NFS, SMB, SSHFS, and rclone mount rows, each controlled by its own setting. Mergerfs member details use optional branch metadata and `df` usage; pool capacity remains available when metadata cannot be read.
+- Group Btrfs mountpoints sharing a device into one expandable volume and optionally merge other repeated device rows. System mounts stay visible, network shares remain separate, and grouping or visibility changes apply without waiting for the next disk poll.
+- Rename “Other” to “Local Filesystems,” show filesystem types on local and external rows, and add an independent External Drives section for USB and removable storage using optional `lsblk` metadata.
+
 ## [0.3.2] - 2026-09-20
 
 - Development installs (built from a checkout that isn't a clean release tag) now stamp themselves with an identifiable version such as `X.Y.Z-dev.<commit>`, with a `.dirty` suffix when the working tree has local changes, so it's obvious at a glance when you're not running an official release. Official releases are unaffected and continue to use the plain `plugin.json` version; a new packaging script (`scripts/package.py`) produces these development builds without changing the tracked source.

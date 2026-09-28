@@ -1,6 +1,6 @@
 # ADR-003: Cache Nix current generation info via plugin state
 
-**Status:** Accepted
+**Status:** Accepted (superseded for collector-enabled reads by [ADR-009](ADR-009-shared-storage-collector.md))
 **Date:** 2026-04-23
 **Applies to:** `DankDiskUsageWidget.qml`
 
@@ -12,7 +12,7 @@ The original implementation used `du -sh /nix/store` for size, which walked all 
 
 ## Decision
 
-Use `pluginService.savePluginState` / `loadPluginState` to persist the last known Nix current generation values (path count and closure size) across sessions. On load, display cached data immediately, then refresh in the background.
+Use `pluginService.savePluginState` / `loadPluginState` to persist the last known Nix current generation values (path count and closure size) across sessions. On load, display cached data immediately, then refresh in the background. This remains the compatibility path when collector mode is disabled. Collector-enabled reads use the shared versioned snapshot described in ADR-009.
 
 Measure the current system closure rather than the entire `/nix/store` directory. This matches the existing path count semantics and avoids expensive whole-store scans.
 
@@ -26,4 +26,5 @@ Measure the current system closure rather than the entire `/nix/store` directory
 
 - Nix current generation info appears instantly on plugin load using the last known values.
 - Stale data is visible briefly until the background refresh completes (at most `refreshInterval` seconds, default 30s).
-- State file is written to `~/.local/state/DankMaterialShell/plugins/dankDiskUsage_state.json`.
+- State file is written to `~/.local/state/DankMaterialShell/plugins/dankDiskUsage_state.json` for the legacy widget-managed path.
+- Collector mode reads `$XDG_CACHE_HOME/dankDiskUsage/snapshot.json` (or `~/.cache/dankDiskUsage/snapshot.json`) and does not enable or install its service.
