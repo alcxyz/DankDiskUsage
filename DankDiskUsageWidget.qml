@@ -40,6 +40,7 @@ PluginComponent {
     property var mergerfsGroups: []
     property var networkMounts: []
     property var externalMounts: []
+    property var staleMounts: []
     property var externalDevices: ({})
     property var mergerfsMetadata: ({})
     property var mergerfsQueue: []
@@ -47,6 +48,8 @@ PluginComponent {
     property var nixStoreInfo: null
     property var collectorSnapshot: null
     property string collectorReadError: ""
+    property string collectorRunError: ""
+    property double collectorLastAttempt: 0
     property double collectorNow: Date.now()
     property bool isScanningNixStore: false
     property int primaryUsagePercent: 0
@@ -79,6 +82,7 @@ PluginComponent {
         if (showNixStore && useCollector && !wasCollecting) {
             root.collectorNow = Date.now()
             collectorFile.reload()
+            root.refreshCollector(true)
         } else if (showNixStore && !useCollector && (wasCollecting === true || wasShowingNixStore === false)
                    && !nixPathCountProcess.running) {
             nixPathCountProcess.running = true
@@ -121,8 +125,38 @@ PluginComponent {
     function refreshAll() {
         if (!dfProcess.running) dfProcess.running = true
         root.collectorNow = Date.now()
-        if (root.showNixStore && root.useCollector) collectorFile.reload()
+        if (root.showNixStore && root.useCollector) {
+            collectorFile.reload()
+            root.refreshCollector(false)
+        }
         if (root.showNixStore && !root.useCollector && !nixPathCountProcess.running) nixPathCountProcess.running = true
+    }
+
+    // The helper owns the shared collection interval; this only bounds launches.
+    function refreshCollector(immediate) {
+        if (!root.showNixStore || !root.useCollector || collectorProcess.running) return
+        var current = Date.now()
+        if (!immediate && current >= root.collectorLastAttempt
+                && current - root.collectorLastAttempt < 60000) return
+        root.collectorLastAttempt = current
+        root.collectorRunError = ""
+        collectorProcess.running = true
+    }
+
+    function collectorFinished(exitCode) {
+        if (!root.showNixStore || !root.useCollector) return
+        root.collectorRunError = exitCode === 127
+                ? "Nix collector helper not found. Install the full plugin package and make dankdiskusage-collector available on DMS's PATH."
+                : exitCode !== 0 ? "Nix collector failed. Check the helper installation and cache permissions." : ""
+        collectorFile.reload()
+    }
+
+    Process {
+        id: collectorProcess
+        // A shell check makes a missing executable a handled exit, not a spawn failure.
+        command: ["sh", "-c", "command -v dankdiskusage-collector >/dev/null 2>&1 || exit 127; exec dankdiskusage-collector"]
+        running: false
+        onExited: (exitCode, exitStatus) => root.collectorFinished(exitCode)
     }
 
     readonly property string collectorCachePath: {
@@ -343,28 +377,51 @@ PluginComponent {
         if (lastDfOutput !== null) root.updateMounts(lastDfOutput)
     }
 
+    // Sources such as "<missing disk>" and mount targets may contain spaces, so
+    // anchor on the fixed numeric columns instead of splitting on whitespace.
+    function parseDfLine(line) {
+        var match = line.trim().match(/^(.+?)\s+(\S+)\s+(-|-?\d\S*)\s+(-|-?\d\S*)\s+(-|-?\d\S*)\s+(-|\d+%)\s+(.+)$/)
+        if (!match) return null
+        return {
+            device: match[1],
+            fstype: match[2],
+            size: match[3],
+            used: match[4],
+            avail: match[5],
+            percent: parseInt(match[6]) || 0,
+            mount: match[7]
+        }
+    }
+
+    // The kernel keeps a mount whose drive was unplugged without unmounting,
+    // and df then reports figures for a device that no longer exists.
+    function isStaleMount(entry) {
+        return entry.device === "<missing disk>"
+    }
+
     // Reparse the cached df snapshot when display settings change. Fresh entries
     // keep dedupe metadata from leaking into subsequent ungrouped views.
     function updateMounts(text) {
         var lines = text.trim().split("\n")
         var all = []
         var topologyEntries = []
+        var stale = []
         for (var i = 0; i < lines.length; i++) {
-            var parts = lines[i].trim().split(/\s+/)
-            if (parts.length < 7) continue
-            var entry = {
-                device: parts[0],
-                fstype: parts[1],
-                size: parts[2],
-                used: parts[3],
-                avail: parts[4],
-                percent: parseInt(parts[5].replace("%", "")) || 0,
-                mount: parts.slice(6).join(" ")
+            var entry = root.parseDfLine(lines[i])
+            if (!entry) continue
+            if (root.isStaleMount(entry)) {
+                if (!root.isExcluded(entry)) {
+                    entry.percent = null
+                    stale.push(entry)
+                }
+                continue
             }
             topologyEntries.push(entry)
             if (root.isExcluded(entry)) continue
             all.push(entry)
         }
+        stale.sort(function(a, b) { return a.mount.localeCompare(b.mount) })
+        root.staleMounts = stale
 
         var important = []
         var pools = {}
@@ -1595,6 +1652,47 @@ PluginComponent {
                 }
             }
 
+            // ── Stale mounts ────────────────────────────────────────
+            Column {
+                width: parent.width
+                spacing: Theme.spacingS
+                visible: root.staleMounts.length > 0
+
+                StyledText {
+                    text: "Stale Mounts"
+                    font.pixelSize: Theme.fontSizeMedium
+                    font.weight: Font.Medium
+                    color: Theme.surfaceVariantText
+                }
+
+                StyledText {
+                    text: "These drives were removed without unmounting. Run umount -l on the path to clear them."
+                    width: parent.width
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                    wrapMode: Text.WordWrap
+                }
+
+                Repeater {
+                    model: root.staleMounts
+
+                    Item {
+                        width: parent.width
+                        height: staleCard.height
+
+                        StorageUsageCard {
+                            id: staleCard
+                            width: parent.width
+                            entry: modelData
+                            title: modelData.mount
+                            subtitle: modelData.fstype + " · device missing"
+                            unavailableText: "Stale: usage not shown"
+                            usageTint: Theme.surfaceVariantText
+                        }
+                    }
+                }
+            }
+
             // ── Local filesystems ───────────────────────────────────
             Column {
                 width: parent.width
@@ -1740,8 +1838,8 @@ PluginComponent {
 
                         StyledText {
                             width: parent.width
-                            visible: root.collectorReadError !== ""
-                            text: root.collectorReadError + (root.collectorSnapshot ? " · showing last snapshot" : "")
+                            visible: root.collectorRunError !== "" || root.collectorReadError !== ""
+                            text: (root.collectorRunError || root.collectorReadError) + (root.collectorSnapshot ? " · showing last snapshot" : "")
                             textFormat: Text.PlainText
                             font.pixelSize: Theme.fontSizeSmall
                             color: Theme.surfaceVariantText
@@ -1869,6 +1967,7 @@ PluginComponent {
                          && root.externalMounts.length === 0
                          && root.networkMounts.length === 0
                          && root.otherMounts.length === 0
+                         && root.staleMounts.length === 0
                          && !root.showNixStore
             }
         }

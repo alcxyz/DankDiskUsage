@@ -13,6 +13,9 @@ function widget() {
     const root = {
         collectorSnapshot: null,
         collectorReadError: '',
+        collectorRunError: '',
+        collectorLastAttempt: 0,
+        collectorProcess: { running: false },
         collectorNow: Date.parse('2026-09-26T12:00:00Z'),
         showNixStore: true,
         useCollector: true,
@@ -155,9 +158,10 @@ test('loadSettings switches collector mode immediately in both directions', () =
     assert.equal(root.collectorFile.reloads, 1);
 });
 
-test('refresh in collector mode only reloads the snapshot and disk data', () => {
+test('refresh in collector mode starts the helper and reloads snapshot and disk data', () => {
     const root = widget();
     root.refreshAll();
+    assert.equal(root.collectorProcess.running, true);
     assert.equal(root.collectorFile.reloads, 1);
     assert.equal(root.dfProcess.running, true);
     assert.equal(root.nixPathCountProcess.running, false);
@@ -174,4 +178,33 @@ test('FileView reads the cache directly and manual scan remains separate', () =>
     assert.match(qml, /onLoaded: \{ if \(root\.showNixStore && root\.useCollector\) root\.acceptCollectorSnapshot\(text\(\)\) \}/);
     assert.match(qml, /root\.showNixStore && !root\.useCollector && !nixPathCountProcess\.running/);
     assert.match(qml, /Store disk usage \(manual scan\)/);
+});
+
+test('collector launches are bounded, opt-in, and report recoverable failures', () => {
+    const root = widget();
+    root.refreshCollector(false);
+    assert.equal(root.collectorProcess.running, true);
+    const attempted = root.collectorLastAttempt;
+    root.collectorProcess.running = false;
+    root.refreshCollector(false);
+    assert.equal(root.collectorProcess.running, false);
+    assert.equal(root.collectorLastAttempt, attempted);
+    root.collectorFinished(127);
+    assert.match(root.collectorRunError, /helper not found.*full plugin package/);
+    root.acceptCollectorSnapshot(JSON.stringify(snapshot()));
+    assert.match(root.collectorRunError, /helper not found/);
+    root.collectorFinished(1);
+    assert.match(root.collectorRunError, /collector failed/);
+    root.collectorFinished(0);
+    assert.equal(root.collectorRunError, '');
+    root.useCollector = false;
+    root.refreshCollector(true);
+    assert.equal(root.collectorProcess.running, false);
+    root.useCollector = true;
+    root.showNixStore = false;
+    root.refreshCollector(true);
+    assert.equal(root.collectorProcess.running, false);
+    root.showNixStore = true;
+    root.refreshCollector(true);
+    assert.equal(root.collectorProcess.running, true);
 });

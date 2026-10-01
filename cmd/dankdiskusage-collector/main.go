@@ -19,12 +19,13 @@ func main() {
 	output := flag.String("output", collector.DefaultOutput(), "snapshot JSON path")
 	database := flag.String("database", "/nix/var/nix/db/db.sqlite", "Nix store database")
 	system := flag.String("system", "/run/current-system", "current system symlink")
+	refreshInterval := flag.Duration("refresh-interval", collector.DefaultRefreshInterval, "minimum time between refreshes (0 forces a refresh)")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected arguments")
 		os.Exit(2)
 	}
-	if err := collector.Refresh(collector.Options{Output: *output, Database: *database, System: *system, Version: version, Diagnostics: os.Stderr}); err != nil {
+	if err := collector.Refresh(collector.Options{Output: *output, Database: *database, System: *system, Version: version, Diagnostics: os.Stderr, RefreshInterval: refreshInterval}); err != nil {
 		fmt.Fprintln(os.Stderr, "collector failed; snapshot not updated")
 		os.Exit(1)
 	}

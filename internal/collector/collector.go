@@ -31,6 +31,8 @@ type Measurement struct {
 type Closure struct {
 	Measurement
 	Target string `json:"target"`
+	// FailedTarget throttles retries for the target whose closure last failed.
+	FailedTarget string `json:"failedTarget,omitempty"`
 }
 
 type Snapshot struct {
@@ -46,7 +48,11 @@ type Snapshot struct {
 type Options struct {
 	Output, Database, System, Version string
 	Diagnostics                       io.Writer
+	// Nil uses DefaultRefreshInterval; zero forces a refresh.
+	RefreshInterval *time.Duration
 }
+
+const DefaultRefreshInterval = 15 * time.Minute
 
 var now = time.Now
 var serviceTimeout = 120 * time.Second
@@ -68,6 +74,13 @@ func DefaultOutput() string {
 }
 
 func Refresh(o Options) error {
+	interval := DefaultRefreshInterval
+	if o.RefreshInterval != nil {
+		interval = *o.RefreshInterval
+	}
+	if interval < 0 {
+		return errors.New("refresh interval must not be negative")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), serviceTimeout)
 	defer cancel()
 	if o.Output == "" {
@@ -95,22 +108,36 @@ func Refresh(o Options) error {
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	s := Snapshot{Version: 1}
+	fresh := false
 	if data, err := readSnapshot(o.Output); err == nil {
 		if err := json.Unmarshal(data, &s); err != nil || !validSnapshot(s) {
 			return errors.New("existing snapshot is incompatible")
 		}
+		if s.GeneratedAt != "" && interval > 0 {
+			generated, _ := time.Parse(time.RFC3339, s.GeneratedAt)
+			current := now().UTC()
+			fresh = !generated.After(current) && current.Sub(generated) < interval
+		}
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	stamp := now().UTC().Format(time.RFC3339)
-	s.GeneratedAt = stamp
-	s.CollectorVersion = o.Version
-	registeredCtx, registeredCancel := context.WithTimeout(ctx, registeredTimeout)
-	s.Nix.Registered = collectRegistered(registeredCtx, o.Database, s.Nix.Registered, stamp, o.Diagnostics)
-	registeredCancel()
 	target, err := filepath.EvalSymlinks(o.System)
+	// A fresh snapshot still follows a system switch, but keeps the store scan
+	// and retries of a failed target on the regular cadence.
+	if fresh && (err != nil || target == s.Nix.Closure.Target || target == s.Nix.Closure.FailedTarget) {
+		return nil
+	}
+	stamp := now().UTC().Format(time.RFC3339)
+	s.CollectorVersion = o.Version
+	if !fresh {
+		s.GeneratedAt = stamp
+		registeredCtx, registeredCancel := context.WithTimeout(ctx, registeredTimeout)
+		s.Nix.Registered = collectRegistered(registeredCtx, o.Database, s.Nix.Registered, stamp, o.Diagnostics)
+		registeredCancel()
+	}
 	if err != nil {
 		s.Nix.Closure.Error = "system target unavailable"
+		s.Nix.Closure.FailedTarget = ""
 		s.Nix.Closure.CheckedAt = stamp
 		diagnostic(o.Diagnostics, "closure", "target-unavailable")
 	} else if target != s.Nix.Closure.Target || s.Nix.Closure.UpdatedAt == "" || s.Nix.Closure.Error != "" {
@@ -121,6 +148,7 @@ func Refresh(o Options) error {
 			s.Nix.Closure = Closure{Measurement: Measurement{Paths: paths, Bytes: size, UpdatedAt: stamp, CheckedAt: stamp, Source: "nix-cli"}, Target: target}
 		} else {
 			s.Nix.Closure.Error = "system closure unavailable"
+			s.Nix.Closure.FailedTarget = target
 			s.Nix.Closure.CheckedAt = stamp
 			diagnostic(o.Diagnostics, "closure", errorCategory(err))
 		}

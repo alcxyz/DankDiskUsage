@@ -94,7 +94,7 @@ PluginSettings {
     ToggleSetting {
         settingKey: "useCollector"
         label: "Use cached Nix collector"
-        description: "Read registered store and closure metadata from the collector cache; keep the manual disk scan available"
+        description: "Automatically refresh registered store and closure metadata with the packaged helper; no service setup needed"
         defaultValue: false
     }
 
