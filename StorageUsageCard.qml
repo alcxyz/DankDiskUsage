@@ -12,6 +12,7 @@ StyledRect {
     property bool compact: false
     property bool expandable: false
     property bool expanded: false
+    property string unavailableText: "Usage unavailable"
 
     readonly property bool hasUsage: entry && entry.percent !== null
                                      && entry.percent !== undefined
@@ -84,7 +85,7 @@ StyledRect {
         }
 
         StyledText {
-            text: card.hasUsage ? card.entry.used + " / " + card.entry.size : "Usage unavailable"
+            text: card.hasUsage ? card.entry.used + " / " + card.entry.size : card.unavailableText
             width: parent.width
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.surfaceVariantText

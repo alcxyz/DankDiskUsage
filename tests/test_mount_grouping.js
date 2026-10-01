@@ -28,6 +28,7 @@ function widget(settings = {}) {
         mergerfsGroups: [],
         networkMounts: [],
         externalMounts: [],
+        staleMounts: [],
         externalDevices: {},
         mergerfsMetadata: {},
         mergerfsRequests: [],
@@ -53,7 +54,7 @@ function widget(settings = {}) {
     for (const name of ['updateMounts', 'loadSettings', 'groupBtrfsVolumes', 'dedupeSameDevice',
         'updatePrimaryUsage', 'groupMergerfs', 'networkProtocol', 'parseMergerfsBranches',
         'acceptMergerfsMetadata', 'parseExternalDevices', 'acceptDeviceMetadata',
-        'externalConnection']) {
+        'externalConnection', 'parseDfLine', 'isStaleMount']) {
         assert.equal(typeof root[name], 'function', `${name} must be an extractable top-level QML function`);
     }
     root.loadSettings();
@@ -693,4 +694,52 @@ test('without system mounts, external storage participates in worst usage fallba
     root.acceptDeviceMetadata(lsblk([{ name: '/dev/usb1', tran: 'usb', rm: false }]));
     assert.deepEqual(mounts(root.externalMounts), ['/media/usb']);
     assert.equal(root.primaryUsagePercent, 84);
+});
+
+test('df rows parse sources and targets containing spaces without shifting columns', () => {
+    const root = widget();
+    assert.deepEqual({ ...root.parseDfLine('<missing disk> btrfs 112G 9.6G 101G 9% /run/media/user/disk') }, {
+        device: '<missing disk>', fstype: 'btrfs', size: '112G', used: '9.6G', avail: '101G',
+        percent: 9, mount: '/run/media/user/disk',
+    });
+    assert.deepEqual({ ...root.parseDfLine('  //nas/My Share  cifs  1.8T  1.2T  600G  67%  /mnt/My Share  ') }, {
+        device: '//nas/My Share', fstype: 'cifs', size: '1.8T', used: '1.2T', avail: '600G',
+        percent: 67, mount: '/mnt/My Share',
+    });
+    const unknown = root.parseDfLine('systemd-1 autofs - - - - /proc/sys/fs/binfmt_misc');
+    assert.equal(unknown.percent, 0);
+    assert.equal(unknown.mount, '/proc/sys/fs/binfmt_misc');
+    assert.equal(root.parseDfLine('garbage'), null);
+});
+
+test('missing-disk mount is flagged stale without usage or pill impact', () => {
+    const root = widget();
+    root.acceptDf([
+        row('/dev/nvme0n1p2', 'ext4', 40, '/'),
+        row('/dev/sdb1', 'ext4', 30, '/data'),
+        '<missing disk> btrfs 112G 9.6G 101G 9% /run/media/user/disk',
+    ].join('\n'));
+    assert.deepEqual(mounts(root.staleMounts), ['/run/media/user/disk']);
+    assert.equal(root.staleMounts[0].fstype, 'btrfs');
+    assert.equal(root.staleMounts[0].percent, null);
+    assert.deepEqual(mounts(root.otherMounts), ['/data']);
+    assert.equal(root.externalMounts.length, 0);
+    assert.equal(root.primaryUsagePercent, 40);
+
+    const fallback = widget();
+    fallback.acceptDf('<missing disk> btrfs 112G 112G 0 100% /run/media/user/disk');
+    assert.equal(fallback.primaryUsagePercent, 0, 'stale usage must not drive the worst-usage fallback');
+});
+
+test('stale mounts honor exclusions and clear when the mount disappears', () => {
+    const stale = '<missing disk> btrfs 112G 9.6G 101G 9% /run/media/user/disk';
+    const excluded = widget({ excludeMounts: ['/run/media/user/*'] });
+    excluded.acceptDf(stale);
+    assert.equal(excluded.staleMounts.length, 0);
+
+    const root = widget();
+    root.acceptDf(stale);
+    assert.equal(root.staleMounts.length, 1);
+    root.acceptDf(row('/dev/nvme0n1p2', 'ext4', 40, '/'));
+    assert.equal(root.staleMounts.length, 0);
 });

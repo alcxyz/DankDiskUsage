@@ -7,6 +7,7 @@ as its GitHub release notes.
 ## [Unreleased]
 
 - Automatically invoke the cached Nix helper when enabled, with a shared 15-minute refresh guard; keep the systemd timer optional for updates while DMS is not running.
+- Drives unplugged without unmounting no longer appear as phantom mounts over 100% full. They now appear under a **Stale Mounts** section with no usage bar and don't affect the bar pill. `df` rows whose source or mount path contains spaces are also parsed correctly.
 
 ## [0.4.0] - 2026-09-28
 
