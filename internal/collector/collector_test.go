@@ -156,6 +156,49 @@ func TestRefreshIntervalSkipsFreshSnapshotAndRunsWhenDue(t *testing.T) {
 	}
 }
 
+func TestFreshSnapshotFollowsSystemSwitchWithoutStoreScan(t *testing.T) {
+	o, target := setup(t)
+	o.RefreshInterval = nil
+	start := time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC)
+	previousNow := now
+	now = func() time.Time { return start }
+	t.Cleanup(func() { now = previousNow })
+	fake(t, "sqlite3", "printf '1|11|0\n'")
+	fake(t, "nix-store", `case "$*" in
+  *--requisites*) printf '/nix/store/aaa\n' ;;
+  *--size*) printf '10\n' ;;
+esac`)
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	newTarget := filepath.Join(filepath.Dir(target), "store2")
+	if err := os.WriteFile(newTarget, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(o.System); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(newTarget, o.System); err != nil {
+		t.Fatal(err)
+	}
+	fake(t, "sqlite3", "touch \"$FAKE_BIN/sqlite-called\"; printf '2|22|0\n'")
+	fake(t, "nix-store", `case "$*" in
+  *--requisites*) printf '/nix/store/bbb\n/nix/store/ccc\n' ;;
+  *--size*) printf '20\n30\n' ;;
+esac`)
+	now = func() time.Time { return start.Add(time.Minute) }
+	if err := Refresh(o); err != nil {
+		t.Fatal(err)
+	}
+	got := read(t, o.Output)
+	if got.Nix.Closure.Target != newTarget || got.Nix.Closure.Bytes != 50 || got.Nix.Registered.Bytes != 11 || got.GeneratedAt != start.Format(time.RFC3339) {
+		t.Fatalf("system switch not followed independently of store cadence: %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("FAKE_BIN"), "sqlite-called")); !os.IsNotExist(err) {
+		t.Fatalf("closure-only refresh ran sqlite: %v", err)
+	}
+}
+
 func TestFutureSnapshotDoesNotSuppressRefresh(t *testing.T) {
 	o, _ := setup(t)
 	o.RefreshInterval = nil

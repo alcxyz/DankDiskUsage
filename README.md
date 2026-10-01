@@ -42,7 +42,7 @@ setup requirements.
 - Mergerfs pools shown as expandable **Merged Storage** cards, with `df` usage for mapped member filesystems
 - USB and removable drives shown in a separate **External Drives** section
 - Network shares (NFS, SMB, SSHFS, and rclone) shown as independent mount rows
-- Drives unplugged without unmounting are flagged under **Stale Mounts** instead of showing a misleading usage bar
+- Btrfs drives unplugged without unmounting (`<missing disk>` in `df`) are flagged under **Stale Mounts** instead of showing a misleading usage bar
 - Nix store total size on demand, plus current NixOS generation path count and closure size
 - Color-coded usage bars with configurable warning/critical thresholds
 - Excludes tmpfs, devtmpfs, overlay, and plain `fuse` mounts automatically

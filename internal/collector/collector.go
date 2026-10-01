@@ -106,6 +106,7 @@ func Refresh(o Options) error {
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	s := Snapshot{Version: 1}
+	fresh := false
 	if data, err := readSnapshot(o.Output); err == nil {
 		if err := json.Unmarshal(data, &s); err != nil || !validSnapshot(s) {
 			return errors.New("existing snapshot is incompatible")
@@ -113,20 +114,25 @@ func Refresh(o Options) error {
 		if s.GeneratedAt != "" && interval > 0 {
 			generated, _ := time.Parse(time.RFC3339, s.GeneratedAt)
 			current := now().UTC()
-			if !generated.After(current) && current.Sub(generated) < interval {
-				return nil
-			}
+			fresh = !generated.After(current) && current.Sub(generated) < interval
 		}
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	stamp := now().UTC().Format(time.RFC3339)
-	s.GeneratedAt = stamp
-	s.CollectorVersion = o.Version
-	registeredCtx, registeredCancel := context.WithTimeout(ctx, registeredTimeout)
-	s.Nix.Registered = collectRegistered(registeredCtx, o.Database, s.Nix.Registered, stamp, o.Diagnostics)
-	registeredCancel()
 	target, err := filepath.EvalSymlinks(o.System)
+	// A fresh snapshot still follows a system switch, but keeps the store scan
+	// and failed closures on the regular cadence.
+	if fresh && (err != nil || target == s.Nix.Closure.Target || s.Nix.Closure.Error != "") {
+		return nil
+	}
+	stamp := now().UTC().Format(time.RFC3339)
+	s.CollectorVersion = o.Version
+	if !fresh {
+		s.GeneratedAt = stamp
+		registeredCtx, registeredCancel := context.WithTimeout(ctx, registeredTimeout)
+		s.Nix.Registered = collectRegistered(registeredCtx, o.Database, s.Nix.Registered, stamp, o.Diagnostics)
+		registeredCancel()
+	}
 	if err != nil {
 		s.Nix.Closure.Error = "system target unavailable"
 		s.Nix.Closure.CheckedAt = stamp

@@ -706,6 +706,13 @@ test('df rows parse sources and targets containing spaces without shifting colum
         device: '//nas/My Share', fstype: 'cifs', size: '1.8T', used: '1.2T', avail: '600G',
         percent: 67, mount: '/mnt/My Share',
     });
+    const overReserved = root.parseDfLine('/dev/sda1 ext4 20G 20G -1.2G 100% /');
+    assert.equal(overReserved.avail, '-1.2G');
+    assert.equal(overReserved.percent, 100);
+    assert.equal(overReserved.mount, '/');
+    const staleNegative = root.parseDfLine('<missing disk> btrfs 112G 113G -1G 100% /run/media/user/disk');
+    assert.equal(staleNegative.device, '<missing disk>');
+    assert.equal(staleNegative.avail, '-1G');
     const unknown = root.parseDfLine('systemd-1 autofs - - - - /proc/sys/fs/binfmt_misc');
     assert.equal(unknown.percent, 0);
     assert.equal(unknown.mount, '/proc/sys/fs/binfmt_misc');

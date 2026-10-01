@@ -380,7 +380,7 @@ PluginComponent {
     // Sources such as "<missing disk>" and mount targets may contain spaces, so
     // anchor on the fixed numeric columns instead of splitting on whitespace.
     function parseDfLine(line) {
-        var match = line.trim().match(/^(.+?)\s+(\S+)\s+(-|\d\S*)\s+(-|\d\S*)\s+(-|\d\S*)\s+(-|\d+%)\s+(.+)$/)
+        var match = line.trim().match(/^(.+?)\s+(\S+)\s+(-|-?\d\S*)\s+(-|-?\d\S*)\s+(-|-?\d\S*)\s+(-|\d+%)\s+(.+)$/)
         if (!match) return null
         return {
             device: match[1],
