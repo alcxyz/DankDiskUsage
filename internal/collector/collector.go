@@ -31,6 +31,8 @@ type Measurement struct {
 type Closure struct {
 	Measurement
 	Target string `json:"target"`
+	// FailedTarget throttles retries for the target whose closure last failed.
+	FailedTarget string `json:"failedTarget,omitempty"`
 }
 
 type Snapshot struct {
@@ -121,8 +123,8 @@ func Refresh(o Options) error {
 	}
 	target, err := filepath.EvalSymlinks(o.System)
 	// A fresh snapshot still follows a system switch, but keeps the store scan
-	// and failed closures on the regular cadence.
-	if fresh && (err != nil || target == s.Nix.Closure.Target || s.Nix.Closure.Error != "") {
+	// and retries of a failed target on the regular cadence.
+	if fresh && (err != nil || target == s.Nix.Closure.Target || target == s.Nix.Closure.FailedTarget) {
 		return nil
 	}
 	stamp := now().UTC().Format(time.RFC3339)
@@ -135,6 +137,7 @@ func Refresh(o Options) error {
 	}
 	if err != nil {
 		s.Nix.Closure.Error = "system target unavailable"
+		s.Nix.Closure.FailedTarget = ""
 		s.Nix.Closure.CheckedAt = stamp
 		diagnostic(o.Diagnostics, "closure", "target-unavailable")
 	} else if target != s.Nix.Closure.Target || s.Nix.Closure.UpdatedAt == "" || s.Nix.Closure.Error != "" {
@@ -145,6 +148,7 @@ func Refresh(o Options) error {
 			s.Nix.Closure = Closure{Measurement: Measurement{Paths: paths, Bytes: size, UpdatedAt: stamp, CheckedAt: stamp, Source: "nix-cli"}, Target: target}
 		} else {
 			s.Nix.Closure.Error = "system closure unavailable"
+			s.Nix.Closure.FailedTarget = target
 			s.Nix.Closure.CheckedAt = stamp
 			diagnostic(o.Diagnostics, "closure", errorCategory(err))
 		}
