@@ -6,6 +6,8 @@ as its GitHub release notes.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-01
+
 - Automatically invoke the cached Nix helper when enabled, with a shared 15-minute refresh guard; switching to a new system still refreshes its closure promptly. The systemd timer stays optional for updates while DMS is not running.
 - Btrfs drives unplugged without unmounting, which `df` reports as `<missing disk>`, no longer appear as phantom mounts over 100% full. They now appear under a **Stale Mounts** section with no usage bar and don't affect the bar pill. `df` rows with spaces in the source or mount path, or with negative sizes, are also parsed correctly.
 
